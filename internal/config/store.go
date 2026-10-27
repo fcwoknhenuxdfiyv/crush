@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
 	"github.com/charmbracelet/crush/internal/env"
 	"github.com/charmbracelet/crush/internal/lock"
+	"github.com/charmbracelet/crush/internal/modelsdev"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/oauth/grok"
@@ -139,6 +141,12 @@ type ConfigStore struct {
 	// on the next wait.
 	authSignalMu sync.Mutex
 	authSignals  map[string]chan struct{}
+
+	// copilotPricingBackfilled records that RefetchCopilotModels has
+	// already tried once to price an unpriced Copilot catalog, so an
+	// unreachable models.dev costs one fetch per process rather than one
+	// per model switch.
+	copilotPricingBackfilled atomic.Bool
 }
 
 // Config returns the pure-data config struct (read-only after load).
@@ -845,12 +853,24 @@ func (s *ConfigStore) RefetchGrokModels(ctx context.Context) {
 // and hyper syncers are swappable globals.
 var fetchCopilotModels = copilot.Models
 
+// copilotPricingProvider is the key models.dev files Copilot under.
+const copilotPricingProvider = "github-copilot"
+
+// fetchCopilotPricing fetches the per-token rates models.dev publishes
+// for Copilot. A package variable so tests can stub the network call.
+var fetchCopilotPricing = modelsdev.Fetch
+
 // refetchCopilotModels stores the live Copilot catalog. With overlay set
 // it is also merged onto the provider's prepared models so their
 // reasoning levels reflect what the API honors; at load time the overlay
 // happens in configureProviders instead, since the models are not
 // prepared yet. Best effort: a failure leaves the existing catalog in
 // place and the login still succeeds.
+//
+// The Copilot listing carries no prices, so the rates models.dev
+// publishes for it are fetched alongside and filled in before the
+// catalog is stored. Pricing is best effort too: an unpriced catalog is
+// still worth keeping for its reasoning levels.
 func (s *ConfigStore) refetchCopilotModels(ctx context.Context, scope Scope, overlay bool) {
 	const providerID = string(catwalk.InferenceProviderCopilot)
 	pc, ok := s.Config().Providers.Get(providerID)
@@ -874,6 +894,11 @@ func (s *ConfigStore) refetchCopilotModels(ctx context.Context, scope Scope, ove
 		slog.Warn("Failed to fetch Copilot model catalog after auth", "error", err)
 		return
 	}
+	if prices, err := fetchCopilotPricing(ctx, copilotPricingProvider); err != nil {
+		slog.Warn("Failed to fetch Copilot pricing from models.dev", "error", err)
+	} else {
+		modelsdev.Apply(models, prices)
+	}
 	if err := s.update(scope, func(c *Config) map[string]any {
 		p, ok := c.Providers.Get(providerID)
 		if !ok {
@@ -894,17 +919,31 @@ func (s *ConfigStore) refetchCopilotModels(ctx context.Context, scope Scope, ove
 
 // RefetchCopilotModels fills in the live Copilot catalog when the
 // provider is signed in but has none — because the fetch at login time
-// failed, or the credentials predate the catalog. A no-op once the
-// catalog exists, so callers can invoke it freely on model updates: an
-// existing catalog is refreshed at startup instead, when Catwalk
-// delivers a new one (see Load).
+// failed, or the credentials predate the catalog — or has one that
+// carries no prices, because it predates pricing or models.dev was
+// unreachable when it was fetched. A no-op once the catalog is priced,
+// so callers can invoke it freely on model updates: an existing catalog
+// is refreshed at startup instead, when Catwalk delivers a new one (see
+// Load). The pricing backfill is attempted once per process so an
+// unreachable models.dev does not cost a fetch on every model switch.
 func (s *ConfigStore) RefetchCopilotModels(ctx context.Context) {
 	cfg := s.Config()
 	pc, ok := cfg.Providers.Get(string(catwalk.InferenceProviderCopilot))
-	if !ok || pc.OAuthToken == nil || len(pc.CopilotModels) > 0 {
+	if !ok || pc.OAuthToken == nil {
 		return
 	}
+	if len(pc.CopilotModels) > 0 {
+		if anyPriced(pc.CopilotModels) || s.copilotPricingBackfilled.Load() {
+			return
+		}
+		s.copilotPricingBackfilled.Store(true)
+	}
 	s.refetchCopilotModels(ctx, ScopeGlobal, true)
+}
+
+// anyPriced reports whether any model in the catalog carries a price.
+func anyPriced(models []catwalk.Model) bool {
+	return slices.ContainsFunc(models, modelsdev.HasPricing)
 }
 
 // RefreshOAuthToken refreshes the OAuth token for the given provider.

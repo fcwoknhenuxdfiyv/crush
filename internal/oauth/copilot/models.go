@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/charmbracelet/crush/internal/modelsdev"
 	"github.com/charmbracelet/crush/internal/oauth"
 )
 
@@ -145,9 +146,10 @@ func Models(ctx context.Context, token *oauth.Token) ([]catwalk.Model, error) {
 }
 
 // MergeModels overlays the live Copilot catalog onto the Catwalk one.
-// Catwalk carries pricing and tuned defaults the listing lacks, while the
-// listing knows which reasoning levels each model honors; models the
-// listing grants but Catwalk does not know are appended as-is.
+// Catwalk carries tuned defaults the listing lacks, while the listing
+// knows which reasoning levels each model honors and, once priced from
+// models.dev, what each model costs; models the listing grants but
+// Catwalk does not know are appended as-is.
 func MergeModels(base, live []catwalk.Model) []catwalk.Model {
 	if len(live) == 0 {
 		return base
@@ -176,6 +178,12 @@ func MergeModels(base, live []catwalk.Model) []catwalk.Model {
 			}
 			if m.DefaultMaxTokens == 0 {
 				m.DefaultMaxTokens = l.DefaultMaxTokens
+			}
+			if !modelsdev.HasPricing(m) && modelsdev.HasPricing(l) {
+				m.CostPer1MIn = l.CostPer1MIn
+				m.CostPer1MOut = l.CostPer1MOut
+				m.CostPer1MInCached = l.CostPer1MInCached
+				m.CostPer1MOutCached = l.CostPer1MOutCached
 			}
 		}
 		merged = append(merged, m)

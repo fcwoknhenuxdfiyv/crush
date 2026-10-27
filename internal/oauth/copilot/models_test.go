@@ -131,9 +131,9 @@ func TestMergeModels(t *testing.T) {
 		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", CanReason: true, ReasoningLevels: []string{"low"}, DefaultReasoningEffort: "low"},
 	}
 	live := []catwalk.Model{
-		{ID: "gpt-5.4", Name: "GPT-5.4", CanReason: true, ReasoningLevels: []string{"low", "medium", "high"}, DefaultReasoningEffort: "medium", ContextWindow: 128000, DefaultMaxTokens: 128000, SupportsImages: true},
-		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", CanReason: true, ReasoningLevels: []string{"low", "medium", "high", "max"}, DefaultReasoningEffort: "medium"},
-		{ID: "gpt-6-astra", Name: "GPT-6 Astra", CanReason: true, ReasoningLevels: []string{"low", "high"}, ContextWindow: 400000},
+		{ID: "gpt-5.4", Name: "GPT-5.4", CanReason: true, ReasoningLevels: []string{"low", "medium", "high"}, DefaultReasoningEffort: "medium", ContextWindow: 128000, DefaultMaxTokens: 128000, SupportsImages: true, CostPer1MIn: 2.5, CostPer1MOut: 15},
+		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5", CanReason: true, ReasoningLevels: []string{"low", "medium", "high", "max"}, DefaultReasoningEffort: "medium", CostPer1MIn: 3, CostPer1MOut: 15, CostPer1MInCached: 3.75, CostPer1MOutCached: 0.3},
+		{ID: "gpt-6-astra", Name: "GPT-6 Astra", CanReason: true, ReasoningLevels: []string{"low", "high"}, ContextWindow: 400000, CostPer1MIn: 2, CostPer1MOut: 10},
 	}
 
 	merged := MergeModels(base, live)
@@ -143,6 +143,7 @@ func TestMergeModels(t *testing.T) {
 	// the live listing.
 	require.Equal(t, "gpt-5.4", merged[0].ID)
 	require.Equal(t, 1.25, merged[0].CostPer1MIn)
+	require.Zero(t, merged[0].CostPer1MOut, "a priced Catwalk model is not partially overwritten")
 	require.Equal(t, int64(400000), merged[0].ContextWindow)
 	require.Equal(t, int64(32000), merged[0].DefaultMaxTokens)
 	require.True(t, merged[0].CanReason)
@@ -154,14 +155,20 @@ func TestMergeModels(t *testing.T) {
 	require.Equal(t, "gpt-4.1", merged[1].ID)
 	require.False(t, merged[1].CanReason)
 
-	// A Catwalk default that the listing still honors is kept.
+	// A Catwalk default that the listing still honors is kept, and an
+	// unpriced Catwalk model takes the listing's prices.
 	require.Equal(t, "claude-sonnet-5", merged[2].ID)
 	require.Equal(t, []string{"low", "medium", "high", "max"}, merged[2].ReasoningLevels)
 	require.Equal(t, "low", merged[2].DefaultReasoningEffort)
+	require.Equal(t, 3.0, merged[2].CostPer1MIn)
+	require.Equal(t, 15.0, merged[2].CostPer1MOut)
+	require.Equal(t, 3.75, merged[2].CostPer1MInCached)
+	require.Equal(t, 0.3, merged[2].CostPer1MOutCached)
 
-	// A model only the listing grants is appended.
+	// A model only the listing grants is appended with its prices.
 	require.Equal(t, "gpt-6-astra", merged[3].ID)
 	require.Equal(t, int64(400000), merged[3].ContextWindow)
+	require.Equal(t, 2.0, merged[3].CostPer1MIn)
 
 	require.Equal(t, base, MergeModels(base, nil), "an empty listing is a no-op")
 }

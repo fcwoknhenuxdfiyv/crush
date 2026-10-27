@@ -33,6 +33,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
 	}
+	if q.createUsageEventStmt, err = db.PrepareContext(ctx, createUsageEvent); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateUsageEvent: %w", err)
+	}
 	if q.deleteFileStmt, err = db.PrepareContext(ctx, deleteFile); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteFile: %w", err)
 	}
@@ -135,11 +138,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
 	}
+	if q.listRootSessionCostsStmt, err = db.PrepareContext(ctx, listRootSessionCosts); err != nil {
+		return nil, fmt.Errorf("error preparing query ListRootSessionCosts: %w", err)
+	}
+	if q.listRootSessionLedgerCostStmt, err = db.PrepareContext(ctx, listRootSessionLedgerCost); err != nil {
+		return nil, fmt.Errorf("error preparing query ListRootSessionLedgerCost: %w", err)
+	}
 	if q.listSessionReadFilesStmt, err = db.PrepareContext(ctx, listSessionReadFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessionReadFiles: %w", err)
 	}
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
+	}
+	if q.listUsageEventsSinceStmt, err = db.PrepareContext(ctx, listUsageEventsSince); err != nil {
+		return nil, fmt.Errorf("error preparing query ListUsageEventsSince: %w", err)
 	}
 	if q.listUserMessagesBySessionStmt, err = db.PrepareContext(ctx, listUserMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserMessagesBySession: %w", err)
@@ -180,6 +192,11 @@ func (q *Queries) Close() error {
 	if q.createSessionStmt != nil {
 		if cerr := q.createSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
+		}
+	}
+	if q.createUsageEventStmt != nil {
+		if cerr := q.createUsageEventStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createUsageEventStmt: %w", cerr)
 		}
 	}
 	if q.deleteFileStmt != nil {
@@ -352,6 +369,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listNewFilesStmt: %w", cerr)
 		}
 	}
+	if q.listRootSessionCostsStmt != nil {
+		if cerr := q.listRootSessionCostsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listRootSessionCostsStmt: %w", cerr)
+		}
+	}
+	if q.listRootSessionLedgerCostStmt != nil {
+		if cerr := q.listRootSessionLedgerCostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listRootSessionLedgerCostStmt: %w", cerr)
+		}
+	}
 	if q.listSessionReadFilesStmt != nil {
 		if cerr := q.listSessionReadFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionReadFilesStmt: %w", cerr)
@@ -360,6 +387,11 @@ func (q *Queries) Close() error {
 	if q.listSessionsStmt != nil {
 		if cerr := q.listSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listUsageEventsSinceStmt != nil {
+		if cerr := q.listUsageEventsSinceStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listUsageEventsSinceStmt: %w", cerr)
 		}
 	}
 	if q.listUserMessagesBySessionStmt != nil {
@@ -439,6 +471,7 @@ type Queries struct {
 	createFileStmt                       *sql.Stmt
 	createMessageStmt                    *sql.Stmt
 	createSessionStmt                    *sql.Stmt
+	createUsageEventStmt                 *sql.Stmt
 	deleteFileStmt                       *sql.Stmt
 	deleteMCPDisabledServerStmt          *sql.Stmt
 	deleteMCPEnabledServerStmt           *sql.Stmt
@@ -473,8 +506,11 @@ type Queries struct {
 	listMessagesBySessionStmt            *sql.Stmt
 	listMessagesBySessionFromSummaryStmt *sql.Stmt
 	listNewFilesStmt                     *sql.Stmt
+	listRootSessionCostsStmt             *sql.Stmt
+	listRootSessionLedgerCostStmt        *sql.Stmt
 	listSessionReadFilesStmt             *sql.Stmt
 	listSessionsStmt                     *sql.Stmt
+	listUsageEventsSinceStmt             *sql.Stmt
 	listUserMessagesBySessionStmt        *sql.Stmt
 	recordFileReadStmt                   *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
@@ -491,6 +527,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createFileStmt:                       q.createFileStmt,
 		createMessageStmt:                    q.createMessageStmt,
 		createSessionStmt:                    q.createSessionStmt,
+		createUsageEventStmt:                 q.createUsageEventStmt,
 		deleteFileStmt:                       q.deleteFileStmt,
 		deleteMCPDisabledServerStmt:          q.deleteMCPDisabledServerStmt,
 		deleteMCPEnabledServerStmt:           q.deleteMCPEnabledServerStmt,
@@ -525,8 +562,11 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
 		listMessagesBySessionFromSummaryStmt: q.listMessagesBySessionFromSummaryStmt,
 		listNewFilesStmt:                     q.listNewFilesStmt,
+		listRootSessionCostsStmt:             q.listRootSessionCostsStmt,
+		listRootSessionLedgerCostStmt:        q.listRootSessionLedgerCostStmt,
 		listSessionReadFilesStmt:             q.listSessionReadFilesStmt,
 		listSessionsStmt:                     q.listSessionsStmt,
+		listUsageEventsSinceStmt:             q.listUsageEventsSinceStmt,
 		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:                   q.recordFileReadStmt,
 		renameSessionStmt:                    q.renameSessionStmt,

@@ -42,6 +42,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/update"
+	"github.com/charmbracelet/crush/internal/usage"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
@@ -61,6 +62,7 @@ type App struct {
 	Permissions permission.Service
 	Questions   question.Service
 	FileTracker filetracker.Service
+	Usage       usage.Service
 
 	AgentCoordinator agent.Coordinator
 
@@ -109,6 +111,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q)
 	files := history.NewService(q, conn)
+	usageLedger := usage.NewService(q)
 	cfg := store.Config()
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
 	var allowedTools []string
@@ -127,6 +130,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools, permissionHooks{hookRunner}),
 		Questions:   question.NewService(),
 		FileTracker: filetracker.NewService(q),
+		Usage:       usageLedger,
 		LSPManager:  lsp.NewManager(store),
 		Skills:      skillsMgr,
 
@@ -855,6 +859,7 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		RunComplete: app.runCompletions,
 		Skills:      app.Skills,
 		HookRunner:  app.hookRunner,
+		Usage:       app.Usage,
 		Interactive: interactive,
 	})
 	if err != nil {

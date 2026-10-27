@@ -63,3 +63,18 @@ type Session struct {
 	Todos            sql.NullString `json:"todos"`
 	Channel          sql.NullString `json:"channel"`
 }
+
+type UsageEvent struct {
+	ID                  int64   `json:"id"`
+	SessionID           string  `json:"session_id"`
+	Provider            string  `json:"provider"`
+	Model               string  `json:"model"`
+	Source              string  `json:"source"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	Cost                float64 `json:"cost"`
+	Estimated           int64   `json:"estimated"`
+	CreatedAt           int64   `json:"created_at"`
+}

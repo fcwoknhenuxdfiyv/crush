@@ -49,6 +49,7 @@ internal/
   pubsub/                          Internal pub/sub for cross-component messaging
   filetracker/                     Tracks files touched per session
   history/                         Prompt history
+  usage/                           Per-call usage ledger and daily spend aggregation
 ```
 
 ### Key Dependency Roles

@@ -44,6 +44,7 @@ import (
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/charmbracelet/crush/internal/usage"
 	"golang.org/x/sync/errgroup"
 
 	"charm.land/fantasy/providers/anthropic"
@@ -166,6 +167,7 @@ type coordinator struct {
 	mainAgentName string
 	agents        map[string]SessionAgent
 	hookRunner    *hooks.Runner
+	usage         usage.Recorder
 
 	// models is shared by every agent; rebuildMu serializes rebuilds of it.
 	models    csync.Value[coordinatorModels]
@@ -195,6 +197,9 @@ type CoordinatorOptions struct {
 	RunComplete pubsub.Publisher[notify.RunComplete]
 	Skills      *skills.Manager
 	HookRunner  *hooks.Runner
+	// Usage records per-call token usage and cost for every agent the
+	// coordinator builds. Nil records nothing.
+	Usage       usage.Recorder
 	Interactive bool
 }
 
@@ -229,6 +234,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		skillTracker: skillTracker,
 		interactive:  opts.Interactive,
 		hookRunner:   opts.HookRunner,
+		usage:        opts.Usage,
 	}
 
 	agentCfg, ok := opts.Config.Config().Agents[config.AgentCoder]
@@ -827,6 +833,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
 		Hooks:                c.hookRunner,
+		Usage:                c.usage,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the

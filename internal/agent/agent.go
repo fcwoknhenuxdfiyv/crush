@@ -45,6 +45,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/stringext"
+	"github.com/charmbracelet/crush/internal/usage"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
@@ -223,6 +224,9 @@ type sessionAgent struct {
 	notify               pubsub.Publisher[notify.Notification]
 	runComplete          pubsub.Publisher[notify.RunComplete]
 	hooks                *hooks.Runner
+	// usage receives one event per provider call so spend can be reported
+	// per day. Nil disables the ledger (tests, legacy callers).
+	usage usage.Recorder
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, *activeCancel]
@@ -282,6 +286,8 @@ type SessionAgentOptions struct {
 	RunComplete          pubsub.Publisher[notify.RunComplete]
 	// Hooks runs lifecycle hooks for turns and compaction. Nil runs none.
 	Hooks *hooks.Runner
+	// Usage records per-call token usage and cost. Nil records nothing.
+	Usage usage.Recorder
 }
 
 func NewSessionAgent(
@@ -301,6 +307,7 @@ func NewSessionAgent(
 		notify:               opts.Notify,
 		runComplete:          opts.RunComplete,
 		hooks:                opts.Hooks,
+		usage:                opts.Usage,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, *activeCancel](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
@@ -1102,12 +1109,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if getSessionErr != nil {
 				return getSessionErr
 			}
-			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
-			a.updateSessionUsage(largeModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
+			stepUsage, estimated := fallbackStepUsage(stepMessages, stepResult)
+			stepCost := a.updateSessionUsage(largeModel, &updatedSession, stepUsage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
 			_, sessionErr := a.sessions.Save(ctx, updatedSession)
 			if sessionErr != nil {
 				return sessionErr
 			}
+			a.recordUsage(ctx, call.SessionID, largeModel, stepUsage, stepCost, estimated, usage.SourceTurn)
 			currentSession = updatedSession
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
@@ -1519,18 +1527,19 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID, trigger string,
 		return err
 	}
 
-	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost, false)
+	summaryCost := a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost, false)
 
 	// Just in case, get just the last usage info.
-	usage := resp.Response.Usage
+	lastUsage := resp.Response.Usage
 	currentSession.SummaryMessageID = summaryMessage.ID
-	currentSession.CompletionTokens = summaryCompletionTokens(usage, summaryMessage)
+	currentSession.CompletionTokens = summaryCompletionTokens(lastUsage, summaryMessage)
 	currentSession.PromptTokens = 0
-	currentSession.EstimatedUsage = usageIsZero(usage)
+	currentSession.EstimatedUsage = usageIsZero(lastUsage)
 	_, err = a.sessions.Save(genCtx, currentSession)
 	if err != nil {
 		return err
 	}
+	a.recordUsage(genCtx, sessionID, largeModel, resp.TotalUsage, summaryCost, false, usage.SourceSummarize)
 	a.hooks.Run(ctx, hooks.Event{Name: hooks.EventPostCompact, SessionID: sessionID, Trigger: trigger})
 
 	// Release the active request before processing queued messages so that
@@ -1928,6 +1937,7 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		return
 	}
 	titleSaved = true
+	a.recordUsage(ctx, sessionID, model, resp.TotalUsage, cost, false, usage.SourceTitle)
 }
 
 func (a *sessionAgent) openrouterCost(metadata fantasy.ProviderMetadata) *float64 {
@@ -1988,7 +1998,10 @@ func extraFieldFloat(pm *openai.ProviderMetadata, key string) *float64 {
 	return &parsed
 }
 
-func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) {
+// updateSessionUsage applies one provider call's usage to the session and
+// returns the cost that was actually added to it (zero when usage was
+// estimated or the model is flat rate).
+func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) float64 {
 	if !usageIsZero(usage) {
 		session.EstimatedUsage = estimated
 	}
@@ -2019,6 +2032,31 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 
 	session.Cost += cost
 	updateSessionTokenCounters(session, usage)
+	return cost
+}
+
+// recordUsage appends one provider call to the usage ledger. Failures are
+// logged and never fail the turn: the session total is the source of
+// truth and the ledger only adds the time dimension.
+func (a *sessionAgent) recordUsage(ctx context.Context, sessionID string, model Model, u fantasy.Usage, cost float64, estimated bool, source usage.Source) {
+	if a.usage == nil {
+		return
+	}
+	err := a.usage.Record(context.WithoutCancel(ctx), usage.Event{
+		SessionID:           sessionID,
+		Provider:            model.ModelCfg.Provider,
+		Model:               model.ModelCfg.Model,
+		Source:              source,
+		InputTokens:         u.InputTokens,
+		OutputTokens:        u.OutputTokens,
+		CacheReadTokens:     u.CacheReadTokens,
+		CacheCreationTokens: u.CacheCreationTokens,
+		Cost:                cost,
+		Estimated:           estimated,
+	})
+	if err != nil {
+		slog.Warn("Failed to record usage event", "session_id", sessionID, "source", source, "error", err)
+	}
 }
 
 // contextTokens returns the size of the prompt the provider processed for

@@ -12,6 +12,7 @@ type Querier interface {
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CreateUsageEvent(ctx context.Context, arg CreateUsageEventParams) error
 	DeleteFile(ctx context.Context, id string) error
 	DeleteMCPDisabledServer(ctx context.Context, name string) error
 	DeleteMCPEnabledServer(ctx context.Context, name string) error
@@ -51,8 +52,11 @@ type Querier interface {
 	// summary can come back too; the caller slices from the summary by ID.
 	ListMessagesBySessionFromSummary(ctx context.Context, arg ListMessagesBySessionFromSummaryParams) ([]Message, error)
 	ListNewFiles(ctx context.Context) ([]File, error)
+	ListRootSessionCosts(ctx context.Context, createdAt int64) ([]ListRootSessionCostsRow, error)
+	ListRootSessionLedgerCost(ctx context.Context, createdAt int64) ([]ListRootSessionLedgerCostRow, error)
 	ListSessionReadFiles(ctx context.Context, sessionID string) ([]ReadFile, error)
 	ListSessions(ctx context.Context) ([]Session, error)
+	ListUsageEventsSince(ctx context.Context, createdAt int64) ([]ListUsageEventsSinceRow, error)
 	// Backs prompt history, which steps back one entry at a time.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error

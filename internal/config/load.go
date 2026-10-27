@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/crush/internal/filepathext"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/home"
+	"github.com/charmbracelet/crush/internal/oauth/copilot"
 	"github.com/charmbracelet/crush/internal/shellconfig"
 	powernapConfig "github.com/charmbracelet/x/powernap/pkg/config"
 	"github.com/qjebbs/go-jsons"
@@ -131,6 +132,7 @@ func Load(ctx context.Context, workingDir, dataDir string, debug bool) (*ConfigS
 		fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		store.refetchOpenAIModels(fetchCtx, ScopeGlobal)
 		store.refetchGrokModels(fetchCtx, ScopeGlobal)
+		store.refetchCopilotModels(fetchCtx, ScopeGlobal, false)
 		cancel()
 		cfg = store.Config()
 	}
@@ -335,6 +337,9 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			continue
 		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
 			prepared.SetupGitHubCopilot()
+			// The live Copilot catalog knows which reasoning levels
+			// each model honors; Catwalk does not.
+			prepared.Models = copilot.MergeModels(prepared.Models, config.CopilotModels)
 		}
 
 		switch p.ID {

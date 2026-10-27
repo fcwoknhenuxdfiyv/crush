@@ -144,6 +144,7 @@ func logoutCopilot(c *client.Client, wsID string) error {
 	if err := cmp.Or(
 		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.copilot.api_key"),
 		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.copilot.oauth"),
+		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.copilot.copilot_models"),
 	); err != nil {
 		return err
 	}

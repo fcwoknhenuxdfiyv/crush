@@ -160,6 +160,13 @@ type ProviderConfig struct {
 	// is authenticated with a Grok account. Like ChatGPTModels, it is
 	// the provider's whole catalog in that case.
 	GrokModels []catwalk.Model `json:"grok_models,omitempty" jsonschema:"-"`
+
+	// CopilotModels lists the models the Copilot plan grants, as reported
+	// by the Copilot API. Unlike ChatGPTModels and GrokModels it is not a
+	// catalog of its own: it is overlaid onto Models at load time so the
+	// reasoning levels each model honors come from the API rather than
+	// from Catwalk.
+	CopilotModels []catwalk.Model `json:"copilot_models,omitempty" jsonschema:"-"`
 }
 
 // ToProvider converts the [ProviderConfig] to a [catwalk.Provider].

@@ -1424,6 +1424,7 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	// guards make this a no-op once a catalog exists.
 	c.cfg.RefetchOpenAIChatGPTModels(ctx)
 	c.cfg.RefetchGrokModels(ctx)
+	c.cfg.RefetchCopilotModels(ctx)
 
 	agent, name := c.activeAgent()
 	return c.updateAgentModels(ctx, agent, name)

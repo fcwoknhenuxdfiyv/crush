@@ -253,6 +253,128 @@ func TestDailyFromDBWithoutLedgerTable(t *testing.T) {
 	require.Equal(t, int64(1), days[0].Sessions)
 }
 
+func TestMonthlyFromDBBucketsByLocalMonth(t *testing.T) {
+	t.Parallel()
+	conn, q, sessions := openTestDB(t)
+	ctx := t.Context()
+
+	a, err := sessions.Create(ctx, "a")
+	require.NoError(t, err)
+	b, err := sessions.Create(ctx, "b")
+	require.NoError(t, err)
+
+	// UTC-5: 2026-11-01T03:30Z is still 2026-10-31 locally, so it belongs
+	// to October.
+	loc := time.FixedZone("test", -5*60*60)
+	lateOctober := time.Date(2026, 11, 1, 3, 30, 0, 0, time.UTC)
+	midOctober := time.Date(2026, 10, 3, 14, 0, 0, 0, time.UTC)
+	november := time.Date(2026, 11, 15, 14, 0, 0, 0, time.UTC)
+
+	record := func(sessID string, at time.Time, ev Event) {
+		t.Helper()
+		ev.SessionID = sessID
+		svc := &service{q: q, now: fixedClock(at)}
+		require.NoError(t, svc.Record(ctx, ev))
+	}
+	// Session a spans several October days; it must count once for the
+	// month.
+	record(a.ID, midOctober, Event{InputTokens: 10, OutputTokens: 1, Cost: 0.10})
+	record(a.ID, lateOctober, Event{InputTokens: 20, OutputTokens: 2, CacheReadTokens: 5, Cost: 0.20})
+	record(b.ID, lateOctober, Event{InputTokens: 30, OutputTokens: 3, CacheCreationTokens: 7, Cost: 0.30})
+	record(b.ID, november, Event{InputTokens: 40, OutputTokens: 4, Cost: 0.40})
+	setCost(t, conn, a.ID, 0.30)
+	setCost(t, conn, b.ID, 0.70)
+
+	months, hasLedger, err := MonthlyFromDB(ctx, conn, time.Time{}, loc)
+	require.NoError(t, err)
+	require.True(t, hasLedger)
+	require.Len(t, months, 2)
+
+	require.Equal(t, "2026-10", months[0].Date)
+	require.Equal(t, int64(2), months[0].Sessions)
+	require.Equal(t, int64(3), months[0].Turns)
+	require.Equal(t, int64(60), months[0].InputTokens)
+	require.Equal(t, int64(6), months[0].OutputTokens)
+	require.Equal(t, int64(5), months[0].CacheReadTokens)
+	require.Equal(t, int64(7), months[0].CacheCreationTokens)
+	require.InDelta(t, 0.60, months[0].Cost, 1e-9)
+	require.False(t, months[0].Approximate)
+
+	require.Equal(t, "2026-11", months[1].Date)
+	require.Equal(t, int64(1), months[1].Sessions)
+	require.Equal(t, int64(1), months[1].Turns)
+	require.Equal(t, int64(40), months[1].InputTokens)
+	require.InDelta(t, 0.40, months[1].Cost, 1e-9)
+	require.False(t, months[1].Approximate)
+}
+
+func TestMonthlyFromDBAttributesRemainderToCreationMonth(t *testing.T) {
+	t.Parallel()
+	conn, q, sessions := openTestDB(t)
+	ctx := t.Context()
+
+	sess, err := sessions.Create(ctx, "spanning")
+	require.NoError(t, err)
+	createdOn := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	setCreatedAt(t, conn, sess.ID, createdOn)
+
+	// 0.4 of the 1.0 total is explained by the ledger, in October. The
+	// unexplained 0.6 lands on the creation month, September.
+	svc := &service{q: q, now: fixedClock(later)}
+	require.NoError(t, svc.Record(ctx, Event{SessionID: sess.ID, Cost: 0.4}))
+	setCost(t, conn, sess.ID, 1.0)
+
+	months, hasLedger, err := MonthlyFromDB(ctx, conn, time.Time{}, time.UTC)
+	require.NoError(t, err)
+	require.True(t, hasLedger)
+	require.Len(t, months, 2)
+
+	require.Equal(t, "2026-09", months[0].Date)
+	require.InDelta(t, 0.6, months[0].Cost, 1e-9)
+	require.InDelta(t, 0.6, months[0].ApproximateCost, 1e-9)
+	require.True(t, months[0].Approximate)
+	require.Equal(t, int64(1), months[0].Sessions)
+	require.Equal(t, int64(0), months[0].Turns)
+
+	require.Equal(t, "2026-10", months[1].Date)
+	require.InDelta(t, 0.4, months[1].Cost, 1e-9)
+	require.False(t, months[1].Approximate)
+	require.Equal(t, int64(1), months[1].Sessions)
+	require.Equal(t, int64(1), months[1].Turns)
+
+	// Restricting to October drops the September remainder entirely.
+	since := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	months, _, err = MonthlyFromDB(ctx, conn, since, time.UTC)
+	require.NoError(t, err)
+	require.Len(t, months, 1)
+	require.Equal(t, "2026-10", months[0].Date)
+	require.InDelta(t, 0.4, months[0].Cost, 1e-9)
+}
+
+func TestMonthlyFromDBWithoutLedgerTable(t *testing.T) {
+	t.Parallel()
+	conn, _, sessions := openTestDB(t)
+	ctx := t.Context()
+
+	root, err := sessions.Create(ctx, "root")
+	require.NoError(t, err)
+	setCreatedAt(t, conn, root.ID, time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC))
+	setCost(t, conn, root.ID, 1.5)
+
+	_, err = conn.ExecContext(ctx, "DROP TABLE usage_events")
+	require.NoError(t, err)
+
+	months, hasLedger, err := MonthlyFromDB(ctx, conn, time.Time{}, time.UTC)
+	require.NoError(t, err)
+	require.False(t, hasLedger)
+	require.Len(t, months, 1)
+	require.Equal(t, "2026-08", months[0].Date)
+	require.InDelta(t, 1.5, months[0].Cost, 1e-9)
+	require.True(t, months[0].Approximate)
+	require.Equal(t, int64(1), months[0].Sessions)
+}
+
 func TestMergeDaysAndTotal(t *testing.T) {
 	t.Parallel()
 	a := []Day{

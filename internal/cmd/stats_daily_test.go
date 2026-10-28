@@ -56,13 +56,13 @@ func TestGatherDailyUsageMergesProjects(t *testing.T) {
 	dirC := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dirC, "crush.db"), []byte("not a database"), 0o644))
 
-	targets := []dailyTarget{
+	targets := []statsTarget{
 		{dbPath: filepath.Join(dirA, "crush.db"), projectDir: "/proj/a"},
 		{dbPath: filepath.Join(dirB, "crush.db"), projectDir: "/proj/b"},
 		{dbPath: filepath.Join(dirC, "crush.db"), projectDir: "/proj/c"},
 	}
 
-	out, err := gatherDailyUsage(ctx, targets, time.Time{}, loc)
+	out, err := gatherPeriodUsage(ctx, dailyPeriod, targets, time.Time{}, loc)
 	require.NoError(t, err)
 
 	require.Len(t, out.Projects, 3)
@@ -76,20 +76,20 @@ func TestGatherDailyUsageMergesProjects(t *testing.T) {
 	require.True(t, out.Projects[2].Skipped)
 	require.NotEmpty(t, out.Projects[2].Error)
 
-	require.Len(t, out.Days, 2)
-	require.Equal(t, "2026-10-26", out.Days[0].Date, "days must be oldest first so the latest sits by the prompt")
-	require.Equal(t, int64(1), out.Days[0].Sessions)
-	require.InDelta(t, 0.5, out.Days[0].Cost, 1e-9)
-	require.False(t, out.Days[0].Approximate)
+	require.Len(t, out.Periods, 2)
+	require.Equal(t, "2026-10-26", out.Periods[0].Date, "days must be oldest first so the latest sits by the prompt")
+	require.Equal(t, int64(1), out.Periods[0].Sessions)
+	require.InDelta(t, 0.5, out.Periods[0].Cost, 1e-9)
+	require.False(t, out.Periods[0].Approximate)
 
-	require.Equal(t, "2026-10-27", out.Days[1].Date)
-	require.Equal(t, int64(2), out.Days[1].Sessions)
-	require.Equal(t, int64(1), out.Days[1].Turns)
-	require.Equal(t, int64(100), out.Days[1].InputTokens)
-	require.Equal(t, int64(10), out.Days[1].OutputTokens)
-	require.InDelta(t, 3.0, out.Days[1].Cost, 1e-9)
-	require.InDelta(t, 2.0, out.Days[1].ApproximateCost, 1e-9)
-	require.True(t, out.Days[1].Approximate)
+	require.Equal(t, "2026-10-27", out.Periods[1].Date)
+	require.Equal(t, int64(2), out.Periods[1].Sessions)
+	require.Equal(t, int64(1), out.Periods[1].Turns)
+	require.Equal(t, int64(100), out.Periods[1].InputTokens)
+	require.Equal(t, int64(10), out.Periods[1].OutputTokens)
+	require.InDelta(t, 3.0, out.Periods[1].Cost, 1e-9)
+	require.InDelta(t, 2.0, out.Periods[1].ApproximateCost, 1e-9)
+	require.True(t, out.Periods[1].Approximate)
 
 	require.InDelta(t, 3.5, out.Total.Cost, 1e-9)
 	require.Equal(t, int64(3), out.Total.Sessions)
@@ -111,13 +111,13 @@ func TestGatherDailyUsageHonorsSince(t *testing.T) {
 	setSessionCreatedAt(t, conn, sess.ID, old)
 
 	since := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	out, err := gatherDailyUsage(ctx, []dailyTarget{{dbPath: filepath.Join(dir, "crush.db"), projectDir: "/p"}}, since, time.UTC)
+	out, err := gatherPeriodUsage(ctx, dailyPeriod, []statsTarget{{dbPath: filepath.Join(dir, "crush.db"), projectDir: "/p"}}, since, time.UTC)
 	require.NoError(t, err)
 	require.Equal(t, "2026-10-01", out.Since)
-	require.Len(t, out.Days, 1)
-	require.Equal(t, "2026-10-27", out.Days[0].Date)
-	require.InDelta(t, 1, out.Days[0].Cost, 1e-9)
-	require.False(t, out.Days[0].Approximate)
+	require.Len(t, out.Periods, 1)
+	require.Equal(t, "2026-10-27", out.Periods[0].Date)
+	require.InDelta(t, 1, out.Periods[0].Cost, 1e-9)
+	require.False(t, out.Periods[0].Approximate)
 }
 
 func TestStatsDailyJSONOutput(t *testing.T) {
@@ -166,14 +166,21 @@ func TestCompactTokens(t *testing.T) {
 	require.Equal(t, "2.3M", compactTokens(2_345_678))
 }
 
-func TestDailyRowFormatting(t *testing.T) {
+func TestPeriodRowFormatting(t *testing.T) {
 	t.Parallel()
 
 	exact := usage.Day{Date: "2026-10-27", Sessions: 2, Turns: 3, InputTokens: 1500, Cost: 1.234}
-	require.Equal(t, []string{"2026-10-27", "2", "3", "1.5K", "0", "0", "0", "$1.23"}, dailyRow(exact.Date, exact))
+	require.Equal(t, []string{"2026-10-27", "2", "3", "1.5K", "0", "0", "0", "$1.23"}, periodRow(exact.Date, exact))
 
 	approx := usage.Day{Date: "2026-10-26", Sessions: 1, Cost: 0.5, ApproximateCost: 0.5, Approximate: true}
-	require.Equal(t, []string{"2026-10-26", "1", "-", "-", "-", "-", "-", "~$0.50"}, dailyRow(approx.Date, approx))
+	require.Equal(t, []string{"2026-10-26", "1", "-", "-", "-", "-", "-", "~$0.50"}, periodRow(approx.Date, approx))
+}
+
+func TestPeriodHeaders(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "Date", dailyPeriod.headers()[0])
+	require.Equal(t, "Month", monthlyPeriod.headers()[0])
+	require.Equal(t, dailyPeriod.headers()[1:], monthlyPeriod.headers()[1:])
 }
 
 func seedEvent(t *testing.T, conn *sql.DB, sessionID string, at time.Time, in, out int64, cost float64) {

@@ -92,10 +92,11 @@ func (s *service) Record(ctx context.Context, ev Event) error {
 	})
 }
 
-// Day is the usage aggregated over one calendar day.
+// Day is the usage aggregated over one calendar period: a day for
+// DailyFromDB, a month for MonthlyFromDB.
 type Day struct {
-	// Date is the calendar day in YYYY-MM-DD form, in the location the
-	// aggregation was computed for.
+	// Date is the period in the location the aggregation was computed
+	// for: YYYY-MM-DD for daily aggregation, YYYY-MM for monthly.
 	Date                string `json:"date"`
 	Sessions            int64  `json:"sessions"`
 	Turns               int64  `json:"turns"`
@@ -115,8 +116,11 @@ type Day struct {
 	sessions map[string]struct{}
 }
 
-// DateLayout is the format used for Day.Date.
+// DateLayout is the format used for Day.Date by DailyFromDB.
 const DateLayout = "2006-01-02"
+
+// MonthLayout is the format used for Day.Date by MonthlyFromDB.
+const MonthLayout = "2006-01"
 
 // costEpsilon absorbs floating point drift between a session's running
 // total and the sum of its ledger rows.
@@ -132,6 +136,20 @@ const costEpsilon = 1e-6
 // table entirely are handled the same way; hasLedger reports whether the
 // table was present.
 func DailyFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.Location) (days []Day, hasLedger bool, err error) {
+	return periodsFromDB(ctx, conn, since, loc, DateLayout)
+}
+
+// MonthlyFromDB is like DailyFromDB but aggregates into calendar months,
+// so Day.Date holds YYYY-MM. Bucketing by month directly, rather than
+// folding days, keeps per-month session counts exact for sessions that
+// span several days.
+func MonthlyFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.Location) (months []Day, hasLedger bool, err error) {
+	return periodsFromDB(ctx, conn, since, loc, MonthLayout)
+}
+
+// periodsFromDB does the aggregation for DailyFromDB and MonthlyFromDB;
+// layout decides the bucket granularity and the shape of Day.Date.
+func periodsFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.Location, layout string) (days []Day, hasLedger bool, err error) {
 	if loc == nil {
 		loc = time.Local
 	}
@@ -143,7 +161,7 @@ func DailyFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.L
 	q := db.New(conn)
 	byDate := map[string]*Day{}
 	bucket := func(createdAt int64) *Day {
-		date := time.Unix(createdAt, 0).In(loc).Format(DateLayout)
+		date := time.Unix(createdAt, 0).In(loc).Format(layout)
 		d, ok := byDate[date]
 		if !ok {
 			d = &Day{Date: date, sessions: map[string]struct{}{}}
@@ -214,9 +232,10 @@ func DailyFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.L
 	return days, hasLedger, nil
 }
 
-// MergeDays sums per-day usage from several databases, oldest first.
+// MergeDays sums per-period usage from several databases, oldest first.
 // Session counts are summed, which is exact because session IDs never
-// repeat across databases.
+// repeat across databases. Groups must share one granularity (all daily
+// or all monthly), since periods are matched on Date.
 func MergeDays(groups ...[]Day) []Day {
 	byDate := map[string]*Day{}
 	for _, group := range groups {
@@ -258,9 +277,10 @@ func (d *Day) add(in Day) {
 	d.Approximate = d.Approximate || in.Approximate
 }
 
-// sortDays orders days chronologically, oldest first, so that in terminal
-// output the most recent day lands at the bottom, next to the total and
-// the prompt.
+// sortDays orders periods chronologically, oldest first, so that in
+// terminal output the most recent one lands at the bottom, next to the
+// total and the prompt. Both YYYY-MM-DD and YYYY-MM sort correctly as
+// strings.
 func sortDays(days []Day) {
 	sort.Slice(days, func(i, j int) bool {
 		return days[i].Date < days[j].Date

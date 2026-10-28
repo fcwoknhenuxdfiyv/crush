@@ -47,6 +47,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/skills"
 	"github.com/charmbracelet/crush/internal/stringext"
+	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -306,6 +307,11 @@ type UI struct {
 	sendProgressBar    bool
 	progressBarEnabled bool
 
+	// progressBarValue and progressBarSentAt implement the progress-bar
+	// keepalive. See applyTerminalStatus.
+	progressBarValue  int
+	progressBarSentAt time.Time
+
 	// turnOutcome is the result of the last agent turn (done or error),
 	// reported to the terminal until the user has seen it. See
 	// trackTurnOutcome.
@@ -453,9 +459,9 @@ type UI struct {
 	probedSessionBusy bool
 	pillsView         string
 
-	// Todo spinner
-	todoSpinner    spinner.Model
-	todoIsSpinning bool
+	// todoSpinner is the in-progress indicator in the todo pill; it runs
+	// on the chat's shared animation clock.
+	todoSpinner todoSpinner
 
 	// pending is the turn this client sent; the placeholder items in the
 	// chat are derived from it by syncPendingItem.
@@ -527,11 +533,6 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		com.Styles.Completions.Match,
 	)
 
-	todoSpinner := spinner.New(
-		spinner.WithSpinner(spinner.MiniDot),
-		spinner.WithStyle(com.Styles.Pills.TodoSpinner),
-	)
-
 	// Attachments component
 	attachments := attachments.New(
 		attachments.NewRenderer(com.Styles.Attachments),
@@ -553,7 +554,6 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		header:              header,
 		completions:         comp,
 		attachments:         attachments,
-		todoSpinner:         todoSpinner,
 		frames:              newFrameCache(frameCacheTTL, frameCacheMaxEntries),
 		lspStates:           make(map[string]workspace.LSPClientInfo),
 		mcpStates:           make(map[string]mcp.ClientInfo),
@@ -565,6 +565,9 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	}
 
 	status := NewStatus(com, ui)
+
+	ui.todoSpinner.style = com.Styles.Pills.TodoSpinner
+	ui.chat.SetExtraAnimatable(&ui.todoSpinner)
 
 	// Seed the active theme key from the large model provider so the
 	// first model selection can correctly skip a redundant theme swap.
@@ -617,6 +620,8 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	ui.isTransparent = opts.TUI.IsTransparent()
 	// enable mouse support (default on)
 	ui.mouseEnabled = opts.TUI.Mouse == nil || *opts.TUI.Mouse
+	// reduce motion: calmer spinners and a slower animation clock
+	anim.SetReduceMotion(opts.TUI.ReducesMotion())
 
 	return ui
 }
@@ -964,10 +969,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hasInProgressTodo(m.session.Todos) {
 			// only start spinner if there is an in-progress todo
 			if m.isAgentBusy() {
-				m.todoIsSpinning = true
-				cmds = append(cmds, m.todoSpinner.Tick)
+				m.todoSpinner.Start()
 			}
 			m.updateLayoutAndSize()
+		} else {
+			// The previous session's spinner must not outlive it.
+			m.todoSpinner.Stop()
 		}
 		// Reload prompt history for the new session.
 		m.historyReset()
@@ -1052,8 +1059,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateHyperCredits()
 			m.session = &msg.Payload
 			if !prevHasInProgress && hasInProgressTodo(m.session.Todos) {
-				m.todoIsSpinning = true
-				cmds = append(cmds, m.todoSpinner.Tick)
+				m.todoSpinner.Start()
+			} else if !hasInProgressTodo(m.session.Todos) {
+				// Nothing is in progress so the pill shows no spinner;
+				// stop it so it does not keep the shared clock running.
+				m.todoSpinner.Stop()
 			}
 			// The pills panel reserves vertical space that the chat area
 			// must yield. Recompute the layout whenever that footprint
@@ -1104,13 +1114,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat.RemoveMessage(msg.Payload.ID)
 		}
 		// start the spinner if there is a new message
-		if hasInProgressTodo(m.session.Todos) && m.isAgentBusy() && !m.todoIsSpinning {
-			m.todoIsSpinning = true
-			cmds = append(cmds, m.todoSpinner.Tick)
+		if hasInProgressTodo(m.session.Todos) && m.isAgentBusy() {
+			m.todoSpinner.Start()
 		}
 		// stop the spinner if the agent is not busy anymore
-		if m.todoIsSpinning && !m.isAgentBusy() {
-			m.todoIsSpinning = false
+		if !m.isAgentBusy() {
+			m.todoSpinner.Stop()
 		}
 		// there is a number of things that could change the pills here so we want to re-render
 		m.renderPills()
@@ -1448,14 +1457,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if m.state == uiChat && m.hasSession() && hasInProgressTodo(m.session.Todos) && m.todoIsSpinning {
-			var cmd tea.Cmd
-			m.todoSpinner, cmd = m.todoSpinner.Update(msg)
-			if cmd != nil {
-				m.renderPills()
-				cmds = append(cmds, cmd)
-			}
-		}
 
 	case tea.KeyPressMsg:
 		if cmd := m.handleKeyPressMsg(msg); cmd != nil {
@@ -1647,17 +1648,22 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleAnimTick advances every visible spinner by one frame. A tick that
 // changed nothing visible is scroll-only so the frame cache survives; one
 // that did keeps the view pinned to the bottom while following, since
-// animated items can change height.
+// animated items can change height. The todo pill spinner rides the same
+// clock, so its pill is re-rendered here when it moved.
 func (m *UI) handleAnimTick(msg animTickMsg) tea.Cmd {
 	if m.state != uiChat {
 		m.chat.stopAnimating(msg)
 		m.markScrollOnly()
 		return nil
 	}
+	todoFrame := m.todoSpinner.frame
 	changed, cmd := m.chat.Tick(msg)
 	if !changed {
 		m.markScrollOnly()
 		return cmd
+	}
+	if m.todoSpinner.frame != todoFrame {
+		m.renderPills()
 	}
 	if m.chat.Follow() {
 		m.chat.ScrollToBottom()
@@ -3841,15 +3847,28 @@ func (m *UI) View() tea.View {
 	return v
 }
 
+// progressBarKeepalive is how often the indeterminate progress bar is
+// re-announced to the terminal while the agent is busy. Ghostty hides a
+// progress bar that has not been reported for 15 seconds, so this must
+// stay comfortably below that. Between keepalives the report is byte
+// identical to the previous one, which lets the renderer skip the write
+// entirely instead of re-sending the OSC sequence on every frame.
+var progressBarKeepalive = 5 * time.Second
+
 // applyTerminalStatus attaches the program status, and the terminal progress
 // bar while the agent is busy. Kept outside the frame cache so the
-// randomized progress value stays fresh.
+// keepalive stays fresh.
 func (m *UI) applyTerminalStatus(v *tea.View) {
 	v.ProgramStatus = m.programStatus()
 	if m.progressBarEnabled && m.sendProgressBar && m.isAgentBusy() {
-		// HACK: use a random percentage to prevent ghostty from hiding it
-		// after a timeout.
-		v.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, rand.Intn(100))
+		// HACK: vary the (otherwise ignored) percentage once per keepalive
+		// period so terminals that time the bar out keep showing it, while
+		// every frame in between reuses the previous report.
+		if now := time.Now(); now.Sub(m.progressBarSentAt) >= progressBarKeepalive {
+			m.progressBarSentAt = now
+			m.progressBarValue = (m.progressBarValue + 1) % 100
+		}
+		v.ProgressBar = tea.NewProgressBar(tea.ProgressBarIndeterminate, m.progressBarValue)
 	}
 }
 
@@ -5192,7 +5211,7 @@ func (m *UI) refreshStyles() {
 	m.textarea.SetStyles(t.Editor.Textarea)
 	m.completions.SetStyles(t.Completions.Normal, t.Completions.Focused, t.Completions.Match)
 	m.attachments.SetStyles(t.Attachments)
-	m.todoSpinner.Style = t.Pills.TodoSpinner
+	m.todoSpinner.style = t.Pills.TodoSpinner
 	m.status.help.Styles = t.Help
 	if d := m.dialog.Dialog(dialog.ThemeID); d != nil {
 		if td, ok := d.(*dialog.Theme); ok {
@@ -5536,7 +5555,7 @@ func (m *UI) cancelAgent() tea.Cmd {
 		// state the cancel just changed; the pill re-renders now from
 		// last-known state and again when the off-thread refresh (and
 		// the agent's own events) land.
-		m.todoIsSpinning = false
+		m.todoSpinner.Stop()
 		m.invalidateBusyCaches()
 		m.renderPills()
 		return m.dispatchBusyRefresh()

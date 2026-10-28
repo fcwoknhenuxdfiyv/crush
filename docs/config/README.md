@@ -543,6 +543,9 @@ Available Keys:
                                 selection, and scrolling in the TUI (default
                                 true); disable to let the terminal emulator
                                 or tmux handle text selection and copy/paste
+  reduce-motion bool            calmer spinners: no scrambled glyphs or color
+                                cycling and a slower animation clock; lowers
+                                terminal CPU usage while the agent works
   scrollbar string              control chat scrollbar visibility: default,
                                 always, or never
   exit-banner default|compact|none
@@ -558,6 +561,7 @@ option ui compact true
 option ui diff unified
 option ui transparent true
 option ui mouse false
+option ui reduce-motion true
 option ui scrollbar always
 option ui exit-banner compact
 option ui completions-max-depth 4

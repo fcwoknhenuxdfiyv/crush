@@ -220,6 +220,7 @@ func runNonInteractive(
 	if !hideSpinner && stderrTTY {
 		t := common.ThemeStylesFromConfig(ws.Config)
 
+		anim.SetReduceMotion(ws.Config.Options.TUI.ReducesMotion())
 		spinner = format.NewSpinner(ctx, cancel, anim.Settings{
 			Size:        10,
 			Label:       "Generating",

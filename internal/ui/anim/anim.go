@@ -18,25 +18,36 @@ import (
 )
 
 const (
-	fps           = 20
+	// fps is the shared animation clock rate. Every spinner frame forces
+	// a full redraw and a terminal repaint, so this is the single biggest
+	// lever on idle CPU while the agent is working. 10 fps keeps the
+	// scramble effect legible while halving the repaint load of the
+	// previous 20 fps clock.
+	fps = 10
+
+	// reducedMotionFPS is the clock rate used when reduce motion is on.
+	// Only the ellipsis and the elapsed-time suffix change between frames
+	// in that mode, so a slower clock loses nothing visually.
+	reducedMotionFPS = 4
+
 	initialChar   = '.'
 	labelGap      = " "
 	labelGapWidth = 1
 
 	// Periods of ellipsis animation speed in steps.
 	//
-	// If the FPS is 20 (50 milliseconds) this means that the ellipsis will
-	// change every 8 frames (400 milliseconds).
-	ellipsisAnimSpeed = 8
+	// If the FPS is 10 (100 milliseconds) this means that the ellipsis
+	// will change every 4 frames (400 milliseconds).
+	ellipsisAnimSpeed = 4
 
 	// The maximum number of animation steps that can pass before a
-	// character appears. With fps == 20 this is ~1s of staggered
+	// character appears. With fps == 10 this is ~1s of staggered
 	// entrance, identical to the previous wall-clock-driven value.
 	// Switching from wall-clock + rand to a step-driven birth schedule
 	// keeps Render() deterministic: two Anim instances built from the
 	// same Settings produce byte-identical output when no Animate ticks
 	// have advanced their step counter.
-	maxBirthSteps = 20
+	maxBirthSteps = 10
 
 	// Number of frames to prerender for the animation. After this number
 	// of frames, the animation will loop. This only applies when color
@@ -66,6 +77,25 @@ func nextID() int {
 	return int(lastID.Add(1))
 }
 
+// reduceMotion is the process-wide reduce-motion preference. It is set
+// once from config before any spinner is built, so it is read without
+// further coordination.
+var reduceMotion atomic.Bool
+
+// SetReduceMotion enables or disables reduced motion for every Anim built
+// afterwards. With reduced motion on, spinners drop the scrambled-glyph
+// region and color cycling, leaving only the label, its ellipsis, and any
+// suffix; FrameInterval also slows down to match. Existing Anim instances
+// are not affected.
+func SetReduceMotion(enabled bool) {
+	reduceMotion.Store(enabled)
+}
+
+// ReduceMotion reports whether reduced motion is enabled.
+func ReduceMotion() bool {
+	return reduceMotion.Load()
+}
+
 // Cache for expensive animation calculations
 type animCache struct {
 	initialFrames  [][]string
@@ -81,15 +111,19 @@ var animCacheMap = csync.NewMap[string, *animCache]()
 // settingsHash creates a hash key for the settings to use for caching
 func settingsHash(opts Settings) string {
 	h := xxh3.New()
-	fmt.Fprintf(h, "%d-%s-%v-%v-%v-%t-%v",
-		opts.Size, opts.Label, opts.LabelColor, opts.GradColorA, opts.GradColorB, opts.CycleColors, opts.SuffixColor)
+	fmt.Fprintf(h, "%d-%s-%v-%v-%v-%t-%v-%t",
+		opts.Size, opts.Label, opts.LabelColor, opts.GradColorA, opts.GradColorB, opts.CycleColors, opts.SuffixColor, opts.NoScramble)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // FrameInterval returns how long each animation frame stays on screen. The
 // UI drives every Anim from one clock ticking at this interval; Anim
-// instances never schedule themselves.
+// instances never schedule themselves. The interval is longer when reduced
+// motion is enabled.
 func FrameInterval() time.Duration {
+	if ReduceMotion() {
+		return time.Second / time.Duration(reducedMotionFPS)
+	}
 	return time.Second / time.Duration(fps)
 }
 
@@ -148,6 +182,13 @@ func New(opts Settings) *Anim {
 	// Validate settings.
 	if opts.Size < 1 {
 		opts.Size = defaultNumCyclingChars
+	}
+	// Reduced motion keeps the label and ellipsis but drops everything
+	// that changes on every frame: the scrambled glyphs and the color
+	// cycle.
+	if ReduceMotion() {
+		opts.NoScramble = true
+		opts.CycleColors = false
 	}
 	if colorIsUnset(opts.GradColorA) {
 		opts.GradColorA = defaultGradColorA

@@ -328,11 +328,14 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 
 	if !hideSpinner && stderrTTY {
 		activeTheme := ""
+		reduceMotion := false
 		if cfg := app.config.Config(); cfg != nil && cfg.Options != nil && cfg.Options.TUI != nil {
 			activeTheme = cfg.Options.TUI.ActiveTheme
+			reduceMotion = cfg.Options.TUI.ReducesMotion()
 		}
 		t := styles.ThemeFromConfig(activeTheme)
 
+		anim.SetReduceMotion(reduceMotion)
 		spinner = format.NewSpinner(ctx, cancel, anim.Settings{
 			Size:        10,
 			Label:       "Generating",

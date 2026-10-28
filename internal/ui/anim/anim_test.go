@@ -58,6 +58,45 @@ func TestAdvanceInitializesBirth(t *testing.T) {
 		"the ellipsis must animate once initialized")
 }
 
+// TestReduceMotion verifies that reduced motion strips the per-frame
+// scramble and color cycle from new spinners and slows the shared clock,
+// while the label's ellipsis keeps animating. It mutates process state so
+// it must not run in parallel.
+func TestReduceMotion(t *testing.T) {
+	SetReduceMotion(true)
+	t.Cleanup(func() { SetReduceMotion(false) })
+
+	require.True(t, ReduceMotion())
+	require.Equal(t, time.Second/time.Duration(reducedMotionFPS), FrameInterval())
+	require.Greater(t, FrameInterval(), time.Second/time.Duration(fps),
+		"reduced motion must tick the clock less often")
+
+	a := New(Settings{ID: "reduced", Size: 5, Label: "Generating", CycleColors: true})
+	require.Equal(t, 0, a.cyclingCharWidth, "reduced motion must drop the scrambled glyphs")
+	require.True(t, a.initialized.Load(), "reduced motion must skip the birth fade-in")
+	require.False(t, a.settings.CycleColors, "reduced motion must disable color cycling")
+	require.Len(t, a.cyclingFrames, prerenderedFrames,
+		"without color cycling only the fixed frame set is prerendered")
+
+	before := a.Render()
+	for range ellipsisAnimSpeed {
+		a.Advance()
+	}
+	require.NotEqual(t, before, a.Render(), "the ellipsis must still animate")
+}
+
+// TestSettingsHashDistinguishesNoScramble guards the frame cache: a
+// scrambled and an unscrambled spinner with otherwise identical settings
+// have different widths and must not share pre-rendered frames.
+func TestSettingsHashDistinguishesNoScramble(t *testing.T) {
+	t.Parallel()
+
+	scrambled := Settings{Size: 5, Label: "Running"}
+	plain := scrambled
+	plain.NoScramble = true
+	require.NotEqual(t, settingsHash(scrambled), settingsHash(plain))
+}
+
 // TestAdvanceIndependentInstances verifies that two Anim instances advance
 // their own counters; the shared clock simply calls Advance on each.
 func TestAdvanceIndependentInstances(t *testing.T) {

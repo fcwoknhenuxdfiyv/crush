@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/session"
@@ -42,6 +43,47 @@ func hasInProgressTodo(todos []session.Todo) bool {
 		}
 	}
 	return false
+}
+
+// todoSpinnerFrames are the glyphs the in-progress todo indicator cycles
+// through, one per shared animation clock tick.
+var todoSpinnerFrames = spinner.MiniDot.Frames
+
+// todoSpinner is the in-progress indicator in the todo pill. It is not a
+// chat item, so instead of running its own tick chain (which redrew the
+// whole screen out of phase with the chat spinners) it registers with the
+// chat's shared animation clock as an extra [chat.Animatable]. The zero
+// value is a stopped spinner.
+type todoSpinner struct {
+	style    lipgloss.Style
+	frame    int
+	spinning bool
+}
+
+var _ chat.Animatable = (*todoSpinner)(nil)
+
+// Start begins spinning. Starting an already spinning indicator keeps its
+// current frame so the glyph does not jump.
+func (s *todoSpinner) Start() { s.spinning = true }
+
+// Stop freezes the indicator; the pill falls back to its static icon.
+func (s *todoSpinner) Stop() { s.spinning = false }
+
+// Spinning implements [chat.Animatable].
+func (s *todoSpinner) Spinning() bool { return s.spinning }
+
+// Advance implements [chat.Animatable].
+func (s *todoSpinner) Advance() bool {
+	if !s.spinning {
+		return false
+	}
+	s.frame = (s.frame + 1) % len(todoSpinnerFrames)
+	return true
+}
+
+// View renders the current frame.
+func (s *todoSpinner) View() string {
+	return s.style.Render(todoSpinnerFrames[s.frame])
 }
 
 // queuePill renders the queue count pill with gradient triangles. Pills always
@@ -311,7 +353,7 @@ func (m *UI) renderPills() {
 	queueFocused := m.pillsExpanded && effective == pillSectionQueue
 
 	inProgressIcon := t.Tool.TodoInProgressIcon.Render(styles.SpinnerIcon)
-	if m.todoIsSpinning {
+	if m.todoSpinner.Spinning() {
 		inProgressIcon = m.todoSpinner.View()
 	}
 

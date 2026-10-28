@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/stretchr/testify/require"
 )
@@ -240,4 +241,86 @@ func TestAnimClock_UnchangedFrameIsScrollOnlyButKeepsClock(t *testing.T) {
 	_, _ = u.Update(animTickMsg{gen: u.chat.animGen})
 	u.View()
 	require.Equal(t, 1, u.frames.hits, "a changed frame must redraw")
+}
+
+// newTodoSpinnerTestUI builds a chat UI with no spinning chat items and a
+// session whose todo list has an in-progress entry, with the todo spinner
+// registered on the shared clock the way New does.
+func newTodoSpinnerTestUI(t *testing.T) *UI {
+	t.Helper()
+	u := newFrameTestUI(t)
+	u.todoSpinner.style = u.com.Styles.Pills.TodoSpinner
+	u.chat.SetExtraAnimatable(&u.todoSpinner)
+	u.session = &session.Session{ID: "s1", Todos: []session.Todo{
+		{Content: "first", Status: session.TodoStatusCompleted},
+		{Content: "second", Status: session.TodoStatusInProgress},
+	}}
+	u.updateLayoutAndSize()
+	return u
+}
+
+func TestAnimClock_TodoSpinnerRunsOnSharedClock(t *testing.T) {
+	t.Parallel()
+	u := newTodoSpinnerTestUI(t)
+
+	_, _ = u.Update(neutralMsg{})
+	require.False(t, u.chat.animRunning, "a stopped todo spinner must not arm the clock")
+	staticPills := u.pillsView
+	require.NotEmpty(t, staticPills)
+
+	u.todoSpinner.Start()
+	_, cmd := u.Update(neutralMsg{})
+	require.NotNil(t, cmd, "a spinning todo pill must arm the clock even with no chat spinner")
+	require.True(t, u.chat.animRunning)
+
+	frame := u.todoSpinner.frame
+	_, cmd = u.Update(animTickMsg{gen: u.chat.animGen})
+	require.NotNil(t, cmd, "the clock must keep running while the todo spinner spins")
+	require.NotEqual(t, frame, u.todoSpinner.frame, "a tick must advance the todo spinner")
+	require.NotEqual(t, staticPills, u.pillsView, "a tick must re-render the pill with the new frame")
+	require.False(t, u.scrollOnlyUpdate, "a moved spinner must redraw the frame")
+
+	u.todoSpinner.Stop()
+	_, _ = u.Update(animTickMsg{gen: u.chat.animGen})
+	require.False(t, u.chat.animRunning, "stopping the todo spinner must let the clock wind down")
+	_, _ = u.Update(neutralMsg{})
+	require.False(t, u.chat.animRunning, "the clock must stay off while nothing spins")
+}
+
+func TestTodoSpinner_AdvanceWrapsFrames(t *testing.T) {
+	t.Parallel()
+	var s todoSpinner
+	require.False(t, s.Advance(), "a stopped spinner must not report a change")
+	require.Equal(t, 0, s.frame)
+
+	s.Start()
+	for range len(todoSpinnerFrames) {
+		require.True(t, s.Advance())
+	}
+	require.Equal(t, 0, s.frame, "frames must wrap")
+	require.Equal(t, todoSpinnerFrames[0], s.View())
+}
+
+func TestView_ProgressBarKeepaliveIsThrottled(t *testing.T) {
+	t.Parallel()
+	u := newFrameTestUI(t)
+	u.progressBarEnabled = true
+	u.sendProgressBar = true
+	warmCaches(u, true)
+
+	first := u.View()
+	require.NotNil(t, first.ProgressBar, "a busy agent must show the progress bar")
+	second := u.View()
+	require.NotNil(t, second.ProgressBar)
+	require.Equal(t, *first.ProgressBar, *second.ProgressBar,
+		"frames inside the keepalive window must repeat the previous report so the renderer can skip it")
+
+	u.progressBarSentAt = u.progressBarSentAt.Add(-progressBarKeepalive)
+	third := u.View()
+	require.NotNil(t, third.ProgressBar)
+	require.NotEqual(t, *second.ProgressBar, *third.ProgressBar,
+		"once the keepalive window elapses the report must change so the terminal keeps the bar")
+
+	warmCaches(u, false)
+	require.Nil(t, u.View().ProgressBar, "an idle agent must not show the progress bar")
 }

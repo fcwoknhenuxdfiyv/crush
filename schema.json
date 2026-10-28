@@ -925,6 +925,11 @@
           ],
           "description": "Exit banner style after quitting Crush",
           "default": "default"
+        },
+        "reduce_motion": {
+          "type": "boolean",
+          "description": "Reduce TUI motion: spinners drop their scrambled glyphs and color cycling and the animation clock runs slower. Lowers terminal CPU usage while the agent is working",
+          "default": false
         }
       },
       "additionalProperties": false,

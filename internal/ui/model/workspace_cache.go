@@ -217,12 +217,11 @@ func (m *UI) applyBusyState(msg busyStateMsg) []tea.Cmd {
 		// reload gate stands, keeping ghost spinners still.
 		m.chat.SetAnimationsAllowed(true)
 	}
-	if m.hasSession() && hasInProgressTodo(m.session.Todos) && busy && !m.todoIsSpinning {
-		m.todoIsSpinning = true
-		cmds = append(cmds, m.todoSpinner.Tick)
+	if m.hasSession() && hasInProgressTodo(m.session.Todos) && busy {
+		m.todoSpinner.Start()
 	}
-	if m.todoIsSpinning && !busy {
-		m.todoIsSpinning = false
+	if !busy {
+		m.todoSpinner.Stop()
 	}
 	m.probedSession = msg.forSession
 	m.probedSessionBusy = msg.sessionBusy

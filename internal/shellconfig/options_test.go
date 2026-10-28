@@ -180,6 +180,24 @@ func TestOption_UIExitBanner(t *testing.T) {
 	require.Contains(t, err.Error(), "expects default, compact, or none")
 }
 
+func TestOption_UIReduceMotion(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "crushrc")
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option ui reduce-motion true`))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(jsonBytes, &result))
+
+	ui := result["options"].(map[string]any)["tui"].(map[string]any)
+	require.Equal(t, true, ui["reduce_motion"])
+
+	_, err = LoadShellConfig(t.Context(), path, []byte(`option ui reduce-motion sometimes`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expects true/false")
+}
+
 func TestOption_BoolShorthand(t *testing.T) {
 	t.Parallel()
 

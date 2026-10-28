@@ -111,6 +111,12 @@ type Chat struct {
 	// message handlers re-enable it when new work arrives.
 	animAllowed bool
 
+	// extraAnim is an animation that lives outside the chat list (the todo
+	// pill spinner) but runs on the shared clock, so the UI never has a
+	// second tick chain redrawing the screen out of phase with this one.
+	// nil when nothing is registered.
+	extraAnim chat.Animatable
+
 	// Mouse state
 	mouseDown     bool
 	mouseDownItem int // Item index where mouse was pressed
@@ -533,8 +539,12 @@ func (m *Chat) HasLiveSpinner() bool {
 	return false
 }
 
-// hasVisibleAnimation reports whether any item in the viewport is spinning.
+// hasVisibleAnimation reports whether any item in the viewport, or the
+// registered extra animation, is spinning.
 func (m *Chat) hasVisibleAnimation() bool {
+	if m.extraAnim != nil && m.extraAnim.Spinning() {
+		return true
+	}
 	if m.list.Len() == 0 {
 		return false
 	}
@@ -545,6 +555,12 @@ func (m *Chat) hasVisibleAnimation() bool {
 		}
 	}
 	return false
+}
+
+// SetExtraAnimatable registers an animation that is not a chat item but
+// should advance on the shared animation clock. Pass nil to unregister.
+func (m *Chat) SetExtraAnimatable(a chat.Animatable) {
+	m.extraAnim = a
 }
 
 // animClockLostAfter is how long an armed clock may go without its tick
@@ -608,29 +624,35 @@ func (m *Chat) stopAnimating(msg animTickMsg) {
 	m.animRunning = false
 }
 
-// Tick advances every visible spinning item by one frame. It reports
-// whether any rendered output changed and returns the next tick while a
-// visible item is still spinning; when none is, the clock stops and no
-// command is returned. Ticks from a superseded clock generation are
-// ignored so they cannot re-arm a second clock.
+// Tick advances every visible spinning item, and the extra animation if
+// one is registered, by one frame. It reports whether any rendered output
+// changed and returns the next tick while something is still spinning;
+// when nothing is, the clock stops and no command is returned. Ticks from
+// a superseded clock generation are ignored so they cannot re-arm a
+// second clock.
 func (m *Chat) Tick(msg animTickMsg) (changed bool, cmd tea.Cmd) {
 	if msg.gen != m.animGen {
 		return false, nil
 	}
 	m.animRunning = false
-	if m.list.Len() == 0 {
-		return false, nil
-	}
 	spinning := false
-	startIdx, endIdx := m.list.VisibleItemIndices()
-	for idx := startIdx; idx <= endIdx; idx++ {
-		animatable, ok := m.list.ItemAt(idx).(chat.Animatable)
-		if !ok || !animatable.Spinning() {
-			continue
-		}
+	if m.extraAnim != nil && m.extraAnim.Spinning() {
 		spinning = true
-		if animatable.Advance() {
+		if m.extraAnim.Advance() {
 			changed = true
+		}
+	}
+	if m.list.Len() > 0 {
+		startIdx, endIdx := m.list.VisibleItemIndices()
+		for idx := startIdx; idx <= endIdx; idx++ {
+			animatable, ok := m.list.ItemAt(idx).(chat.Animatable)
+			if !ok || !animatable.Spinning() {
+				continue
+			}
+			spinning = true
+			if animatable.Advance() {
+				changed = true
+			}
 		}
 	}
 	if !spinning {

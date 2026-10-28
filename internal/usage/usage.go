@@ -123,7 +123,8 @@ const DateLayout = "2006-01-02"
 const costEpsilon = 1e-6
 
 // DailyFromDB aggregates usage from one project database into days, in
-// the given location. since limits the range (zero means all time).
+// the given location, oldest first. since limits the range (zero means
+// all time).
 //
 // Ledger events are bucketed by the time they happened. Spend recorded on
 // sessions before the ledger existed is attributed to the session's
@@ -213,9 +214,9 @@ func DailyFromDB(ctx context.Context, conn *sql.DB, since time.Time, loc *time.L
 	return days, hasLedger, nil
 }
 
-// MergeDays sums per-day usage from several databases. Session counts are
-// summed, which is exact because session IDs never repeat across
-// databases.
+// MergeDays sums per-day usage from several databases, oldest first.
+// Session counts are summed, which is exact because session IDs never
+// repeat across databases.
 func MergeDays(groups ...[]Day) []Day {
 	byDate := map[string]*Day{}
 	for _, group := range groups {
@@ -257,9 +258,12 @@ func (d *Day) add(in Day) {
 	d.Approximate = d.Approximate || in.Approximate
 }
 
+// sortDays orders days chronologically, oldest first, so that in terminal
+// output the most recent day lands at the bottom, next to the total and
+// the prompt.
 func sortDays(days []Day) {
 	sort.Slice(days, func(i, j int) bool {
-		return days[i].Date > days[j].Date
+		return days[i].Date < days[j].Date
 	})
 }
 

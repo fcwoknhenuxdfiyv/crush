@@ -119,20 +119,20 @@ func TestDailyFromDBBucketsEventsByLocalDay(t *testing.T) {
 	require.True(t, hasLedger)
 	require.Len(t, days, 2)
 
-	require.Equal(t, "2026-10-27", days[0].Date)
-	require.Equal(t, int64(2), days[0].Sessions)
-	require.Equal(t, int64(3), days[0].Turns)
-	require.Equal(t, int64(51), days[0].InputTokens)
-	require.Equal(t, int64(5), days[0].OutputTokens)
-	require.Equal(t, int64(5), days[0].CacheReadTokens)
-	require.Equal(t, int64(7), days[0].CacheCreationTokens)
-	require.InDelta(t, 0.50, days[0].Cost, 1e-9)
+	require.Equal(t, "2026-10-26", days[0].Date)
+	require.Equal(t, int64(1), days[0].Sessions)
+	require.Equal(t, int64(1), days[0].Turns)
+	require.InDelta(t, 0.10, days[0].Cost, 1e-9)
 	require.False(t, days[0].Approximate)
 
-	require.Equal(t, "2026-10-26", days[1].Date)
-	require.Equal(t, int64(1), days[1].Sessions)
-	require.Equal(t, int64(1), days[1].Turns)
-	require.InDelta(t, 0.10, days[1].Cost, 1e-9)
+	require.Equal(t, "2026-10-27", days[1].Date)
+	require.Equal(t, int64(2), days[1].Sessions)
+	require.Equal(t, int64(3), days[1].Turns)
+	require.Equal(t, int64(51), days[1].InputTokens)
+	require.Equal(t, int64(5), days[1].OutputTokens)
+	require.Equal(t, int64(5), days[1].CacheReadTokens)
+	require.Equal(t, int64(7), days[1].CacheCreationTokens)
+	require.InDelta(t, 0.50, days[1].Cost, 1e-9)
 	require.False(t, days[1].Approximate)
 }
 
@@ -173,19 +173,19 @@ func TestDailyFromDBAttributesRemainderToCreationDay(t *testing.T) {
 	require.True(t, hasLedger)
 	require.Len(t, days, 2)
 
-	require.Equal(t, "2026-10-25", days[0].Date)
-	require.InDelta(t, 0.6, days[0].Cost, 1e-9)
-	require.InDelta(t, 0, days[0].ApproximateCost, 1e-9)
-	require.False(t, days[0].Approximate)
+	require.Equal(t, "2026-10-20", days[0].Date)
+	require.InDelta(t, 2.9, days[0].Cost, 1e-9)
+	require.InDelta(t, 2.9, days[0].ApproximateCost, 1e-9)
+	require.True(t, days[0].Approximate)
 	require.Equal(t, int64(2), days[0].Sessions)
-	require.Equal(t, int64(2), days[0].Turns)
+	require.Equal(t, int64(0), days[0].Turns)
 
-	require.Equal(t, "2026-10-20", days[1].Date)
-	require.InDelta(t, 2.9, days[1].Cost, 1e-9)
-	require.InDelta(t, 2.9, days[1].ApproximateCost, 1e-9)
-	require.True(t, days[1].Approximate)
+	require.Equal(t, "2026-10-25", days[1].Date)
+	require.InDelta(t, 0.6, days[1].Cost, 1e-9)
+	require.InDelta(t, 0, days[1].ApproximateCost, 1e-9)
+	require.False(t, days[1].Approximate)
 	require.Equal(t, int64(2), days[1].Sessions)
-	require.Equal(t, int64(0), days[1].Turns)
+	require.Equal(t, int64(2), days[1].Turns)
 }
 
 func TestDailyFromDBHonorsSince(t *testing.T) {
@@ -266,9 +266,9 @@ func TestMergeDaysAndTotal(t *testing.T) {
 
 	merged := MergeDays(a, b)
 	require.Len(t, merged, 3)
-	require.Equal(t, "2026-10-28", merged[0].Date)
+	require.Equal(t, "2026-10-26", merged[0].Date)
 	require.Equal(t, "2026-10-27", merged[1].Date)
-	require.Equal(t, "2026-10-26", merged[2].Date)
+	require.Equal(t, "2026-10-28", merged[2].Date)
 
 	require.Equal(t, int64(3), merged[1].Sessions)
 	require.Equal(t, int64(5), merged[1].Turns)
@@ -276,7 +276,7 @@ func TestMergeDaysAndTotal(t *testing.T) {
 	require.Equal(t, int64(7), merged[1].OutputTokens)
 	require.InDelta(t, 3, merged[1].Cost, 1e-9)
 	require.False(t, merged[1].Approximate)
-	require.True(t, merged[2].Approximate)
+	require.True(t, merged[0].Approximate)
 
 	total := Total(merged)
 	require.Equal(t, "", total.Date)

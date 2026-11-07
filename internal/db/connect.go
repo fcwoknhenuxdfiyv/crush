@@ -238,6 +238,30 @@ func ConnectReadOnly(ctx context.Context, dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenFile opens a writable SQLite database at dbPath without running
+// migrations or joining the shared pool. It exists so callers (mainly tests
+// that build fixture databases for other tools) can create SQLite files
+// through whichever driver this build uses.
+func OpenFile(ctx context.Context, dbPath string) (*sql.DB, error) {
+	if dbPath == "" {
+		return nil, fmt.Errorf("database path is empty")
+	}
+
+	db, err := openDB(dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	db.SetMaxOpenConns(1)
+
+	if err = db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	return db, nil
+}
+
 func initGoose() error {
 	gooseInitOnce.Do(func() {
 		goose.SetBaseFS(FS)

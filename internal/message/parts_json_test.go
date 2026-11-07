@@ -30,6 +30,29 @@ func TestPartsRoundTrip(t *testing.T) {
 	require.Equal(t, parts, decoded)
 }
 
+// TestExportedPartsRoundTrip checks the exported wrappers produce the same
+// encoding the service writes, so importers stay compatible with the TUI.
+func TestExportedPartsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	parts := []ContentPart{
+		TextContent{Text: "hello", Hidden: true},
+		ToolCall{ID: "c1", Name: "view", Input: `{"file_path":"a.go"}`, Finished: true},
+		Finish{Reason: FinishReasonToolUse, Time: 7},
+	}
+
+	exported, err := MarshalParts(parts)
+	require.NoError(t, err)
+
+	internal, err := marshalParts(parts)
+	require.NoError(t, err)
+	require.JSONEq(t, string(internal), string(exported))
+
+	decoded, err := UnmarshalParts(exported)
+	require.NoError(t, err)
+	require.Equal(t, parts, decoded)
+}
+
 func TestUnmarshalPartsEdgeCases(t *testing.T) {
 	t.Parallel()
 

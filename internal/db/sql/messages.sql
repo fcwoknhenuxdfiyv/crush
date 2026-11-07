@@ -35,6 +35,23 @@ INSERT INTO messages (
 )
 RETURNING *;
 
+-- name: ImportMessage :exec
+-- Used by history importers, which preserve the original timestamps.
+INSERT INTO messages (
+    id,
+    session_id,
+    role,
+    parts,
+    model,
+    provider,
+    is_summary_message,
+    created_at,
+    updated_at,
+    finished_at
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+);
+
 -- name: UpdateMessage :exec
 UPDATE messages
 SET

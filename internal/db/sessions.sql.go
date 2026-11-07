@@ -137,6 +137,57 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 	return i, err
 }
 
+const importSession = `-- name: ImportSession :exec
+INSERT INTO sessions (
+    id,
+    parent_session_id,
+    title,
+    message_count,
+    prompt_tokens,
+    completion_tokens,
+    cost,
+    summary_message_id,
+    todos,
+    created_at,
+    updated_at
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+)
+`
+
+type ImportSessionParams struct {
+	ID               string         `json:"id"`
+	ParentSessionID  sql.NullString `json:"parent_session_id"`
+	Title            string         `json:"title"`
+	MessageCount     int64          `json:"message_count"`
+	PromptTokens     int64          `json:"prompt_tokens"`
+	CompletionTokens int64          `json:"completion_tokens"`
+	Cost             float64        `json:"cost"`
+	SummaryMessageID sql.NullString `json:"summary_message_id"`
+	Todos            sql.NullString `json:"todos"`
+	CreatedAt        int64          `json:"created_at"`
+	UpdatedAt        int64          `json:"updated_at"`
+}
+
+// Used by history importers, which carry their own timestamps and
+// counters instead of letting the database stamp the current time.
+func (q *Queries) ImportSession(ctx context.Context, arg ImportSessionParams) error {
+	_, err := q.exec(ctx, q.importSessionStmt, importSession,
+		arg.ID,
+		arg.ParentSessionID,
+		arg.Title,
+		arg.MessageCount,
+		arg.PromptTokens,
+		arg.CompletionTokens,
+		arg.Cost,
+		arg.SummaryMessageID,
+		arg.Todos,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
 const listSessions = `-- name: ListSessions :many
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, channel
 FROM sessions

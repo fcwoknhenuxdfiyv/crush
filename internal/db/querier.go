@@ -36,6 +36,11 @@ type Querier interface {
 	GetUsageByDayOfWeek(ctx context.Context) ([]GetUsageByDayOfWeekRow, error)
 	GetUsageByHour(ctx context.Context) ([]GetUsageByHourRow, error)
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
+	// Used by history importers, which preserve the original timestamps.
+	ImportMessage(ctx context.Context, arg ImportMessageParams) error
+	// Used by history importers, which carry their own timestamps and
+	// counters instead of letting the database stamp the current time.
+	ImportSession(ctx context.Context, arg ImportSessionParams) error
 	InsertMCPDisabledServer(ctx context.Context, name string) error
 	InsertMCPEnabledServer(ctx context.Context, name string) error
 	// Backs prompt history when no session is open. Needs

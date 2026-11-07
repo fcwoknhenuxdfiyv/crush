@@ -628,6 +628,18 @@ type partWrapper struct {
 	Data ContentPart `json:"data"`
 }
 
+// MarshalParts encodes message parts in the on-disk format used by the
+// messages table. It is exported for importers that write message rows
+// directly rather than through [Service].
+func MarshalParts(parts []ContentPart) ([]byte, error) {
+	return marshalParts(parts)
+}
+
+// UnmarshalParts is the inverse of [MarshalParts].
+func UnmarshalParts(data []byte) ([]ContentPart, error) {
+	return unmarshalParts(data)
+}
+
 func marshalParts(parts []ContentPart) ([]byte, error) {
 	wrappedParts := make([]partWrapper, len(parts))
 

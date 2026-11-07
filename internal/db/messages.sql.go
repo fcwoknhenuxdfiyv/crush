@@ -145,6 +145,53 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 	return i, err
 }
 
+const importMessage = `-- name: ImportMessage :exec
+INSERT INTO messages (
+    id,
+    session_id,
+    role,
+    parts,
+    model,
+    provider,
+    is_summary_message,
+    created_at,
+    updated_at,
+    finished_at
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+)
+`
+
+type ImportMessageParams struct {
+	ID               string         `json:"id"`
+	SessionID        string         `json:"session_id"`
+	Role             string         `json:"role"`
+	Parts            string         `json:"parts"`
+	Model            sql.NullString `json:"model"`
+	Provider         sql.NullString `json:"provider"`
+	IsSummaryMessage int64          `json:"is_summary_message"`
+	CreatedAt        int64          `json:"created_at"`
+	UpdatedAt        int64          `json:"updated_at"`
+	FinishedAt       sql.NullInt64  `json:"finished_at"`
+}
+
+// Used by history importers, which preserve the original timestamps.
+func (q *Queries) ImportMessage(ctx context.Context, arg ImportMessageParams) error {
+	_, err := q.exec(ctx, q.importMessageStmt, importMessage,
+		arg.ID,
+		arg.SessionID,
+		arg.Role,
+		arg.Parts,
+		arg.Model,
+		arg.Provider,
+		arg.IsSummaryMessage,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.FinishedAt,
+	)
+	return err
+}
+
 const listAllUserMessages = `-- name: ListAllUserMessages :many
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, prism_model_id, prism_model_name, prism_hypercredit_savings, prism_dollar_savings
 FROM messages

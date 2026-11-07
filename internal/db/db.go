@@ -105,6 +105,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getUsageByModelStmt, err = db.PrepareContext(ctx, getUsageByModel); err != nil {
 		return nil, fmt.Errorf("error preparing query GetUsageByModel: %w", err)
 	}
+	if q.importMessageStmt, err = db.PrepareContext(ctx, importMessage); err != nil {
+		return nil, fmt.Errorf("error preparing query ImportMessage: %w", err)
+	}
+	if q.importSessionStmt, err = db.PrepareContext(ctx, importSession); err != nil {
+		return nil, fmt.Errorf("error preparing query ImportSession: %w", err)
+	}
 	if q.insertMCPDisabledServerStmt, err = db.PrepareContext(ctx, insertMCPDisabledServer); err != nil {
 		return nil, fmt.Errorf("error preparing query InsertMCPDisabledServer: %w", err)
 	}
@@ -314,6 +320,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getUsageByModelStmt: %w", cerr)
 		}
 	}
+	if q.importMessageStmt != nil {
+		if cerr := q.importMessageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing importMessageStmt: %w", cerr)
+		}
+	}
+	if q.importSessionStmt != nil {
+		if cerr := q.importSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing importSessionStmt: %w", cerr)
+		}
+	}
 	if q.insertMCPDisabledServerStmt != nil {
 		if cerr := q.insertMCPDisabledServerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing insertMCPDisabledServerStmt: %w", cerr)
@@ -495,6 +511,8 @@ type Queries struct {
 	getUsageByDayOfWeekStmt              *sql.Stmt
 	getUsageByHourStmt                   *sql.Stmt
 	getUsageByModelStmt                  *sql.Stmt
+	importMessageStmt                    *sql.Stmt
+	importSessionStmt                    *sql.Stmt
 	insertMCPDisabledServerStmt          *sql.Stmt
 	insertMCPEnabledServerStmt           *sql.Stmt
 	listAllUserMessagesStmt              *sql.Stmt
@@ -551,6 +569,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByDayOfWeekStmt:              q.getUsageByDayOfWeekStmt,
 		getUsageByHourStmt:                   q.getUsageByHourStmt,
 		getUsageByModelStmt:                  q.getUsageByModelStmt,
+		importMessageStmt:                    q.importMessageStmt,
+		importSessionStmt:                    q.importSessionStmt,
 		insertMCPDisabledServerStmt:          q.insertMCPDisabledServerStmt,
 		insertMCPEnabledServerStmt:           q.insertMCPEnabledServerStmt,
 		listAllUserMessagesStmt:              q.listAllUserMessagesStmt,

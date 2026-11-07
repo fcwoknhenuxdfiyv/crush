@@ -17,7 +17,7 @@ The module path is `github.com/charmbracelet/crush`.
 main.go                            CLI entry point (cobra via internal/cmd)
 internal/
   app/app.go                       Top-level wiring: DB, config, agents, LSP, MCP, events
-  cmd/                             CLI commands (root, run, login, models, stats, sessions)
+  cmd/                             CLI commands (root, run, login, models, stats, sessions, import)
   config/
     config.go                      Config struct, context file paths, agent definitions
     load.go                        crushrc and crush.json loading and validation
@@ -50,6 +50,7 @@ internal/
   filetracker/                     Tracks files touched per session
   history/                         Prompt history
   usage/                           Per-call usage ledger and daily spend aggregation
+  opencode/                        Read-only OpenCode database reader and session importer
 ```
 
 ### Key Dependency Roles

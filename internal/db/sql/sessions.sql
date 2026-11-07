@@ -23,6 +23,25 @@ INSERT INTO sessions (
     strftime('%s', 'now')
 ) RETURNING *;
 
+-- name: ImportSession :exec
+-- Used by history importers, which carry their own timestamps and
+-- counters instead of letting the database stamp the current time.
+INSERT INTO sessions (
+    id,
+    parent_session_id,
+    title,
+    message_count,
+    prompt_tokens,
+    completion_tokens,
+    cost,
+    summary_message_id,
+    todos,
+    created_at,
+    updated_at
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+);
+
 -- name: GetSessionByID :one
 SELECT *
 FROM sessions

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/crush/internal/db"
+	"github.com/charmbracelet/crush/internal/opencode"
 	"github.com/charmbracelet/crush/internal/projects"
 	"github.com/stretchr/testify/require"
 )
@@ -37,9 +38,11 @@ CREATE TABLE session_message (
 `
 
 // writeOpenCodeFixture builds an OpenCode database holding one session in
-// projectDir and one in a directory that no longer exists. It returns the
-// database path.
-func writeOpenCodeFixture(t *testing.T, projectDir, missingDir string) string {
+// projectDir and one in a directory that no longer exists. When
+// sharedProject is set both sessions belong to the same project, whose
+// worktree is projectDir; otherwise the vanished directory is a project of
+// its own. It returns the database path.
+func writeOpenCodeFixture(t *testing.T, projectDir, missingDir string, sharedProject bool) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "opencode.db")
 	conn, err := db.OpenFile(t.Context(), path)
@@ -55,12 +58,18 @@ func writeOpenCodeFixture(t *testing.T, projectDir, missingDir string) string {
 		_, err := conn.ExecContext(ctx, query, args...)
 		require.NoError(t, err)
 	}
+	goneProject := "prj_2"
+	if sharedProject {
+		goneProject = "prj_1"
+	}
 	exec(`INSERT INTO project (id, worktree, name, time_created, time_updated) VALUES ('prj_1', ?, 'proj', 1, 1)`, projectDir)
-	exec(`INSERT INTO project (id, worktree, name, time_created, time_updated) VALUES ('prj_2', ?, 'gone', 1, 1)`, missingDir)
+	if !sharedProject {
+		exec(`INSERT INTO project (id, worktree, name, time_created, time_updated) VALUES ('prj_2', ?, 'gone', 1, 1)`, missingDir)
+	}
 	exec(`INSERT INTO session_v2 (id, project_id, slug, directory, title, version, cost, time_created, time_updated)
 		VALUES ('ses_keep', 'prj_1', 'keep', ?, 'Fix the build', '1.0.0', 0.5, 1700000000000, 1700000010000)`, projectDir)
 	exec(`INSERT INTO session_v2 (id, project_id, slug, directory, title, version, cost, time_created, time_updated)
-		VALUES ('ses_gone', 'prj_2', 'gone', ?, 'Old work', '1.0.0', 0.1, 1700000000000, 1700000010000)`, missingDir)
+		VALUES ('ses_gone', ?, 'gone', ?, 'Old work', '1.0.0', 0.1, 1700000000000, 1700000010000)`, goneProject, missingDir)
 
 	message := func(id, sessionID, typ string, seq, created int64, data map[string]any) {
 		t.Helper()
@@ -89,6 +98,14 @@ func writeOpenCodeFixture(t *testing.T, projectDir, missingDir string) string {
 
 func setupImportOpenCodeEnv(t *testing.T) (projectDir, sourcePath string) {
 	t.Helper()
+	return setupImportOpenCodeEnvWith(t, false)
+}
+
+// setupImportOpenCodeEnvWith prepares an isolated Crush environment, a git
+// checkout to import into and an OpenCode fixture database. See
+// writeOpenCodeFixture for sharedProject.
+func setupImportOpenCodeEnvWith(t *testing.T, sharedProject bool) (projectDir, sourcePath string) {
+	t.Helper()
 	t.Setenv("CRUSH_GLOBAL_CONFIG", t.TempDir())
 	t.Setenv("CRUSH_GLOBAL_DATA", t.TempDir())
 	t.Setenv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
@@ -101,36 +118,54 @@ func setupImportOpenCodeEnv(t *testing.T) (projectDir, sourcePath string) {
 	t.Chdir(projectDir)
 
 	missingDir := filepath.Join(projectDir, "vanished")
-	return projectDir, writeOpenCodeFixture(t, projectDir, missingDir)
+	return projectDir, writeOpenCodeFixture(t, projectDir, missingDir, sharedProject)
 }
 
 // runImportOpenCodeCmd runs the command with the given flags and returns
 // the decoded JSON report.
 func runImportOpenCodeCmd(t *testing.T, flags map[string]string) (importOpenCodeOutput, string) {
 	t.Helper()
+	out, errOut, runErr := execImportOpenCodeCmd(t, flags)
+	require.NoError(t, runErr, errOut)
+
+	var report importOpenCodeOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &report), out)
+	return report, errOut
+}
+
+// execImportOpenCodeCmd runs the command in JSON mode with the given flags
+// and returns its stdout, stderr and error. Flags are reset before and
+// after so runs sharing the command do not leak state into each other.
+func execImportOpenCodeCmd(t *testing.T, flags map[string]string) (stdout, stderr string, err error) {
+	t.Helper()
 	var out, errOut bytes.Buffer
 	importOpenCodeCmd.SetOut(&out)
 	importOpenCodeCmd.SetErr(&errOut)
 	importOpenCodeCmd.SetContext(t.Context())
+	resetImportOpenCodeFlags()
 	require.NoError(t, importOpenCodeCmd.Flags().Set("json", "true"))
 	for name, value := range flags {
 		require.NoError(t, importOpenCodeCmd.Flags().Set(name, value))
 	}
-	t.Cleanup(func() {
-		importOpenCodeCmd.Flags().Set("json", "false")
-		importOpenCodeCmd.Flags().Set("source", "")
-		importOpenCodeCmd.Flags().Set("dry-run", "false")
-		importOpenCodeCmd.Flags().Set("current", "false")
-		importOpenCodeCmd.Flags().Set("no-usage", "false")
-		importOpenCodeCmd.Flags().Set("project", "")
-	})
+	t.Cleanup(resetImportOpenCodeFlags)
 
-	runErr := importOpenCodeCmd.RunE(importOpenCodeCmd, nil)
-	require.NoError(t, runErr, errOut.String())
+	err = importOpenCodeCmd.RunE(importOpenCodeCmd, nil)
+	return out.String(), errOut.String(), err
+}
 
-	var report importOpenCodeOutput
-	require.NoError(t, json.Unmarshal(out.Bytes(), &report), out.String())
-	return report, errOut.String()
+// resetImportOpenCodeFlags puts every flag back to its default.
+func resetImportOpenCodeFlags() {
+	importOpenCodeCmd.Flags().Set("json", "false")
+	importOpenCodeCmd.Flags().Set("source", "")
+	importOpenCodeCmd.Flags().Set("dry-run", "false")
+	importOpenCodeCmd.Flags().Set("current", "false")
+	importOpenCodeCmd.Flags().Set("no-usage", "false")
+	importOpenCodeCmd.Flags().Set("group-by", "project")
+	// Setting a slice flag appends once it has been changed, so it has to
+	// be replaced wholesale to really clear it.
+	if v, ok := importOpenCodeCmd.Flags().Lookup("project").Value.(interface{ Replace([]string) error }); ok {
+		v.Replace(nil)
+	}
 }
 
 func TestImportOpenCodeDryRunWritesNothing(t *testing.T) {
@@ -140,6 +175,7 @@ func TestImportOpenCodeDryRunWritesNothing(t *testing.T) {
 
 	require.True(t, report.DryRun)
 	require.Equal(t, "v2", report.Generation)
+	require.Equal(t, "project", report.GroupBy)
 	require.Len(t, report.Projects, 1)
 	require.Equal(t, projectDir, report.Projects[0].Dir)
 	require.Equal(t, filepath.Join(projectDir, ".crush"), report.Projects[0].DataDir)
@@ -209,6 +245,64 @@ func TestImportOpenCodeCurrentFilter(t *testing.T) {
 	report, _ = runImportOpenCodeCmd(t, map[string]string{"source": source, "dry-run": "true", "current": "true"})
 	require.Len(t, report.Projects, 1)
 	require.Equal(t, projectDir, report.Projects[0].Dir)
+}
+
+func TestImportOpenCodeGroupsByProject(t *testing.T) {
+	projectDir, source := setupImportOpenCodeEnvWith(t, true)
+	missingDir := filepath.Join(projectDir, "vanished")
+
+	// By default the session from the deleted checkout is rescued into the
+	// project's worktree instead of being skipped.
+	report, _ := runImportOpenCodeCmd(t, map[string]string{"source": source, "dry-run": "true"})
+	require.Equal(t, "project", report.GroupBy)
+	require.Len(t, report.Projects, 1)
+	require.Equal(t, projectDir, report.Projects[0].Dir)
+	require.Equal(t, 2, report.Projects[0].Sessions)
+	require.Equal(t, 2, report.Projects[0].Imported)
+	require.Equal(t, []opencode.FoldedDirectory{{Dir: missingDir, Sessions: 1, Exists: false}}, report.Projects[0].Folded)
+	require.Empty(t, report.Skipped)
+	require.Equal(t, 0, report.Total.Skipped)
+	require.Equal(t, 1, report.Total.Folded)
+	require.Equal(t, 2, report.Total.Imported)
+
+	// Running from another checkout of the same project selects it too.
+	elsewhere := t.TempDir()
+	t.Chdir(elsewhere)
+	report, _ = runImportOpenCodeCmd(t, map[string]string{"source": source, "dry-run": "true", "project": missingDir})
+	require.Len(t, report.Projects, 1)
+	require.Equal(t, projectDir, report.Projects[0].Dir)
+	t.Chdir(projectDir)
+
+	// Directory grouping restores the per-directory behaviour.
+	report, _ = runImportOpenCodeCmd(t, map[string]string{"source": source, "dry-run": "true", "group-by": "directory"})
+	require.Equal(t, "directory", report.GroupBy)
+	require.Len(t, report.Projects, 1)
+	require.Equal(t, 1, report.Projects[0].Sessions)
+	require.Empty(t, report.Projects[0].Folded)
+	require.Len(t, report.Skipped, 1)
+	require.Equal(t, missingDir, report.Skipped[0].Dir)
+	require.Equal(t, 0, report.Total.Folded)
+
+	// The real import lands both sessions in the worktree's database.
+	report, _ = runImportOpenCodeCmd(t, map[string]string{"source": source})
+	require.Equal(t, 2, report.Total.Imported)
+	conn, err := db.Connect(t.Context(), filepath.Join(projectDir, ".crush"))
+	require.NoError(t, err)
+	q := db.New(conn)
+	for _, id := range []string{"ses_keep", "ses_gone"} {
+		_, err := q.GetSessionByID(t.Context(), id)
+		require.NoError(t, err, id)
+	}
+	require.NoError(t, db.Release(filepath.Join(projectDir, ".crush")))
+	require.NoDirExists(t, filepath.Join(missingDir, ".crush"))
+}
+
+func TestImportOpenCodeRejectsUnknownGrouping(t *testing.T) {
+	_, source := setupImportOpenCodeEnv(t)
+
+	_, _, err := execImportOpenCodeCmd(t, map[string]string{"source": source, "dry-run": "true", "group-by": "bogus"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `unknown grouping "bogus"`)
 }
 
 func TestImportOpenCodeNoUsage(t *testing.T) {

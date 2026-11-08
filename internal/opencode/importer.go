@@ -20,16 +20,17 @@ type ImportOptions struct {
 
 // ProjectResult reports what happened to one project's sessions.
 type ProjectResult struct {
-	Dir            string         `json:"dir"`
-	DataDir        string         `json:"data_dir"`
-	Sessions       int            `json:"sessions"`
-	Imported       int            `json:"imported"`
-	AlreadyPresent int            `json:"already_present"`
-	Failed         int            `json:"failed"`
-	Messages       int            `json:"messages"`
-	Events         int            `json:"usage_events"`
-	Dropped        map[string]int `json:"dropped,omitempty"`
-	Warnings       []string       `json:"warnings,omitempty"`
+	Dir            string            `json:"dir"`
+	DataDir        string            `json:"data_dir"`
+	Folded         []FoldedDirectory `json:"folded,omitempty"`
+	Sessions       int               `json:"sessions"`
+	Imported       int               `json:"imported"`
+	AlreadyPresent int               `json:"already_present"`
+	Failed         int               `json:"failed"`
+	Messages       int               `json:"messages"`
+	Events         int               `json:"usage_events"`
+	Dropped        map[string]int    `json:"dropped,omitempty"`
+	Warnings       []string          `json:"warnings,omitempty"`
 }
 
 // Importer copies sessions from an OpenCode source into Crush databases.
@@ -56,6 +57,7 @@ func (im *Importer) ImportProject(ctx context.Context, proj *ProjectPlan, conn *
 	res := &ProjectResult{
 		Dir:      proj.Dir,
 		DataDir:  proj.DataDir,
+		Folded:   proj.Folded,
 		Sessions: proj.Total,
 		Dropped:  map[string]int{},
 	}

@@ -26,11 +26,17 @@ var importOpenCodeCmd = &cobra.Command{
 	Short: "Import OpenCode session history",
 	Long: `Import sessions from an OpenCode database into Crush.
 
-Each OpenCode session is filed under the project directory it was recorded
-in and written to that project's Crush database, so it appears in the
-session picker when Crush runs there. Sub-agent sessions are nested under
-the task that spawned them. Sessions whose project directory no longer
-exists are skipped with a warning.
+OpenCode groups sessions by project (one git repository, however many
+worktrees or clones it was used from) while Crush keeps a separate session
+list per directory. By default every session of an OpenCode project is
+written to the Crush database of that project's main worktree, so the
+picker there shows the same history OpenCode did; the directories that
+were folded together are reported. Pass --group-by directory to keep each
+session in the directory it was recorded in instead.
+
+Sub-agent sessions are nested under the task that spawned them. Sessions
+whose directory no longer exists are skipped with a warning unless their
+project still has one that does.
 
 Per-call usage is carried over as well, so spend reports stay exact for
 the imported history. Pass --no-usage to leave the ledger untouched.
@@ -44,8 +50,11 @@ crush import opencode --dry-run
 # Import everything
 crush import opencode
 
-# Import only sessions recorded in the current project
+# Import only the project the current directory belongs to
 crush import opencode --current
+
+# Keep sessions in the directories they were recorded in
+crush import opencode --group-by directory
 
 # Import one project from a copied database
 crush import opencode --source ~/backup/opencode.db --project ~/src/app
@@ -55,8 +64,9 @@ crush import opencode --source ~/backup/opencode.db --project ~/src/app
 
 func init() {
 	importOpenCodeCmd.Flags().String("source", "", "Path to the OpenCode database (default: the OpenCode data directory)")
-	importOpenCodeCmd.Flags().StringSlice("project", nil, "Only import sessions recorded in this directory (repeatable)")
-	importOpenCodeCmd.Flags().Bool("current", false, "Only import sessions recorded in the current directory")
+	importOpenCodeCmd.Flags().StringSlice("project", nil, "Only import sessions recorded in this directory or its OpenCode project (repeatable)")
+	importOpenCodeCmd.Flags().Bool("current", false, "Only import sessions recorded in the current directory or its OpenCode project")
+	importOpenCodeCmd.Flags().String("group-by", string(opencode.GroupByProject), "How sessions map to Crush directories: project or directory")
 	importOpenCodeCmd.Flags().Bool("dry-run", false, "Show what would be imported without writing anything")
 	importOpenCodeCmd.Flags().Bool("json", false, "Output as JSON")
 	importOpenCodeCmd.Flags().Bool("no-usage", false, "Do not record per-call usage for imported sessions")
@@ -66,6 +76,7 @@ func init() {
 type importOpenCodeOutput struct {
 	Source     string                    `json:"source"`
 	Generation string                    `json:"generation"`
+	GroupBy    string                    `json:"group_by"`
 	DryRun     bool                      `json:"dry_run"`
 	Projects   []opencode.ProjectResult  `json:"projects"`
 	Skipped    []opencode.SkippedGroup   `json:"skipped,omitempty"`
@@ -77,6 +88,7 @@ type importOpenCodeOutput struct {
 type importOpenCodeTotals struct {
 	Projects       int `json:"projects"`
 	Sessions       int `json:"sessions"`
+	Folded         int `json:"folded"`
 	Imported       int `json:"imported"`
 	AlreadyPresent int `json:"already_present"`
 	Failed         int `json:"failed"`
@@ -100,7 +112,13 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	noUsage, _ := cmd.Flags().GetBool("no-usage")
+	groupByFlag, _ := cmd.Flags().GetString("group-by")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
+
+	groupBy, err := opencode.ParseGrouping(groupByFlag)
+	if err != nil {
+		return err
+	}
 
 	sourcePath, err := resolveOpenCodeSource(source)
 	if err != nil {
@@ -122,6 +140,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 	defer src.Close()
 
 	plan, err := opencode.NewPlan(ctx, src, opencode.PlanOptions{
+		GroupBy:        groupBy,
 		Projects:       projectFilters,
 		DataDir:        dataDir,
 		ResolveDataDir: resolveProjectDataDir,
@@ -133,6 +152,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 	out := importOpenCodeOutput{
 		Source:     plan.Source,
 		Generation: plan.Generation.String(),
+		GroupBy:    string(plan.GroupBy),
 		DryRun:     dryRun,
 		Skipped:    plan.Skipped,
 		Warnings:   plan.Warnings,
@@ -151,6 +171,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 		out.Projects = append(out.Projects, *res)
 		out.Total.Projects++
 		out.Total.Sessions += res.Sessions
+		out.Total.Folded += foldedSessions(*res)
 		out.Total.Imported += res.Imported
 		out.Total.AlreadyPresent += res.AlreadyPresent
 		out.Total.Failed += res.Failed
@@ -177,6 +198,15 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 	}
 	for _, e := range out.Errors {
 		fmt.Fprintf(cmd.ErrOrStderr(), "error: %s: %s\n", e.Dir, e.Error)
+	}
+	for _, p := range out.Projects {
+		for _, f := range p.Folded {
+			note := ""
+			if !f.Exists {
+				note = " (directory no longer exists)"
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "note: %d session(s) from %s filed under %s%s\n", f.Sessions, f.Dir, p.Dir, note)
+		}
 	}
 
 	if len(out.Projects) == 0 {
@@ -292,6 +322,7 @@ func importRow(label string, p opencode.ProjectResult) []string {
 	return []string{
 		label,
 		fmt.Sprintf("%d", p.Sessions),
+		fmt.Sprintf("%d", foldedSessions(p)),
 		fmt.Sprintf("%d", p.Imported),
 		fmt.Sprintf("%d", p.AlreadyPresent),
 		fmt.Sprintf("%d", p.Failed),
@@ -304,6 +335,7 @@ func importTotalsRow(t importOpenCodeTotals) []string {
 	return []string{
 		"Total",
 		fmt.Sprintf("%d", t.Sessions),
+		fmt.Sprintf("%d", t.Folded),
 		fmt.Sprintf("%d", t.Imported),
 		fmt.Sprintf("%d", t.AlreadyPresent),
 		fmt.Sprintf("%d", t.Failed),
@@ -312,7 +344,17 @@ func importTotalsRow(t importOpenCodeTotals) []string {
 	}
 }
 
-var importHeaders = []string{"Project", "Sessions", "Imported", "Present", "Failed", "Messages", "Usage"}
+// foldedSessions counts the sessions a project gathered from directories
+// other than its own.
+func foldedSessions(p opencode.ProjectResult) int {
+	n := 0
+	for _, f := range p.Folded {
+		n += f.Sessions
+	}
+	return n
+}
+
+var importHeaders = []string{"Project", "Sessions", "Folded", "Imported", "Present", "Failed", "Messages", "Usage"}
 
 func renderImportTable(w io.Writer, out importOpenCodeOutput) {
 	home, _ := os.UserHomeDir()
@@ -371,6 +413,9 @@ func importSummaryLine(out importOpenCodeOutput) string {
 	var parts []string
 	if out.DryRun {
 		parts = append(parts, "Dry run: nothing was written.")
+	}
+	if out.Total.Folded > 0 {
+		parts = append(parts, fmt.Sprintf("%d session(s) recorded in other worktrees of the same project were filed under its main directory.", out.Total.Folded))
 	}
 	if out.Total.Skipped > 0 {
 		parts = append(parts, fmt.Sprintf("%d session(s) skipped because their directory no longer exists.", out.Total.Skipped))

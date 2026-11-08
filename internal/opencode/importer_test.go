@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -43,10 +44,11 @@ func TestNewPlanGroupsByDirectoryAndSkipsMissing(t *testing.T) {
 	f.sessionV2("ses_child2", "prj_1", "ses_root", other, "Elsewhere", 0, 1_700_000_300_000, 1_700_000_400_000)
 	src := f.open()
 
-	plan, err := NewPlan(t.Context(), src, PlanOptions{})
+	plan, err := NewPlan(t.Context(), src, PlanOptions{GroupBy: GroupByDirectory})
 	require.NoError(t, err)
 	require.Equal(t, GenerationV2, plan.Generation)
 	require.Equal(t, f.path, plan.Source)
+	require.Equal(t, GroupByDirectory, plan.GroupBy)
 	require.Len(t, plan.Projects, 2)
 	require.Equal(t, 5, plan.Sessions())
 
@@ -63,6 +65,7 @@ func TestNewPlanGroupsByDirectoryAndSkipsMissing(t *testing.T) {
 	require.Equal(t, "ses_child", main.Children["ses_root"][0].ID)
 	require.Equal(t, "ses_child2", main.Children["ses_root"][1].ID)
 	require.Equal(t, 3, main.Total)
+	require.Nil(t, main.Folded, "directory grouping never folds")
 
 	second := byDir[other]
 	require.NotNil(t, second)
@@ -77,8 +80,201 @@ func TestNewPlanGroupsByDirectoryAndSkipsMissing(t *testing.T) {
 	require.Equal(t, 2, reasons[gone].Sessions)
 	require.Equal(t, "directory does not exist", reasons[gone].Reason)
 	require.Equal(t, 1, reasons["(none)"].Sessions)
+	require.Equal(t, "no project directory recorded", reasons["(none)"].Reason)
 	require.Len(t, plan.Warnings, 1)
 	require.Contains(t, plan.Warnings[0], "1 sessions reference a parent")
+}
+
+// sharedProjectFixture builds a project used from three directories (its
+// worktree, a second checkout and one that has since been deleted) plus a
+// couple of sessions under OpenCode's catch-all "global" project. It
+// returns the fixture and the directories involved.
+func sharedProjectFixture(t *testing.T) (f *fixture, worktree, other, gone, global, globalGone string) {
+	t.Helper()
+	f = newFixture(t, v2Schema)
+	worktree = t.TempDir()
+	other = t.TempDir()
+	gone = filepath.Join(t.TempDir(), "gone")
+	global = t.TempDir()
+	globalGone = filepath.Join(t.TempDir(), "gone-too")
+
+	f.project("prj_shared", worktree)
+	f.sessionV2("ses_wt", "prj_shared", "", worktree, "In worktree", 0, 3_000, 3_000)
+	f.sessionV2("ses_other", "prj_shared", "", other, "In other checkout", 0, 1_000, 9_000)
+	f.sessionV2("ses_other_child", "prj_shared", "ses_other", other, "Sub-agent", 0, 1_500, 9_000)
+	f.sessionV2("ses_gone", "prj_shared", "", gone, "In deleted checkout", 0, 2_000, 2_000)
+
+	f.project("global", "/")
+	f.sessionV2("ses_global", "global", "", global, "Scratch", 0, 1_000, 1_000)
+	f.sessionV2("ses_global_gone", "global", "", globalGone, "Old scratch", 0, 1_000, 1_000)
+	return f, worktree, other, gone, global, globalGone
+}
+
+func TestNewPlanGroupsByProject(t *testing.T) {
+	t.Parallel()
+	f, worktree, other, gone, global, globalGone := sharedProjectFixture(t)
+	src := f.open()
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{})
+	require.NoError(t, err)
+	require.Equal(t, GroupByProject, plan.GroupBy, "project grouping is the default")
+	require.Len(t, plan.Projects, 2)
+	require.Equal(t, 5, plan.Sessions())
+
+	byDir := map[string]*ProjectPlan{}
+	for _, p := range plan.Projects {
+		byDir[p.Dir] = p
+	}
+
+	// Every session of the shared project lands in its worktree, even the
+	// ones recorded in a directory that no longer exists.
+	shared := byDir[worktree]
+	require.NotNil(t, shared)
+	require.Equal(t, filepath.Join(worktree, ".crush"), shared.DataDir)
+	require.Equal(t, 4, shared.Total)
+	require.Len(t, shared.Roots, 3)
+	require.Equal(t, "ses_other", shared.Roots[0].ID)
+	require.Equal(t, "ses_gone", shared.Roots[1].ID)
+	require.Equal(t, "ses_wt", shared.Roots[2].ID)
+	require.Len(t, shared.Children["ses_other"], 1)
+	want := []FoldedDirectory{
+		{Dir: other, Sessions: 2, Exists: true},
+		{Dir: gone, Sessions: 1, Exists: false},
+	}
+	sort.Slice(want, func(i, j int) bool { return want[i].Dir < want[j].Dir })
+	require.Equal(t, want, shared.Folded)
+
+	// The global project is not a real project, so its sessions stay
+	// grouped by directory.
+	scratch := byDir[global]
+	require.NotNil(t, scratch)
+	require.Equal(t, 1, scratch.Total)
+	require.Nil(t, scratch.Folded)
+	require.Equal(t, []SkippedGroup{{Dir: globalGone, Sessions: 1, Reason: "directory does not exist"}}, plan.Skipped)
+}
+
+func TestNewPlanGroupByDirectory(t *testing.T) {
+	t.Parallel()
+	f, worktree, other, gone, global, globalGone := sharedProjectFixture(t)
+	src := f.open()
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{GroupBy: GroupByDirectory})
+	require.NoError(t, err)
+	require.Equal(t, GroupByDirectory, plan.GroupBy)
+	require.Len(t, plan.Projects, 3)
+	require.Equal(t, 4, plan.Sessions())
+
+	totals := map[string]int{}
+	for _, p := range plan.Projects {
+		totals[p.Dir] = p.Total
+		require.Nil(t, p.Folded)
+	}
+	require.Equal(t, map[string]int{worktree: 1, other: 2, global: 1}, totals)
+
+	skipped := map[string]SkippedGroup{}
+	for _, s := range plan.Skipped {
+		skipped[s.Dir] = s
+	}
+	require.Len(t, skipped, 2)
+	require.Equal(t, SkippedGroup{Dir: gone, Sessions: 1, Reason: "directory does not exist"}, skipped[gone])
+	require.Equal(t, SkippedGroup{Dir: globalGone, Sessions: 1, Reason: "directory does not exist"}, skipped[globalGone])
+}
+
+func TestNewPlanProjectWorktreeFallback(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, v2Schema)
+	older := t.TempDir()
+	newer := t.TempDir()
+	gone := filepath.Join(t.TempDir(), "gone")
+	f.project("prj_moved", filepath.Join(t.TempDir(), "old-worktree"))
+	f.sessionV2("ses_older", "prj_moved", "", older, "Older", 0, 1_000, 1_000)
+	f.sessionV2("ses_newer", "prj_moved", "", newer, "Newer", 0, 1_000, 2_000)
+	// Activity in a deleted directory never makes it the destination,
+	// however recent.
+	f.sessionV2("ses_gone", "prj_moved", "", gone, "Gone", 0, 1_000, 5_000)
+	src := f.open()
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{})
+	require.NoError(t, err)
+	require.Len(t, plan.Projects, 1)
+	require.Empty(t, plan.Skipped)
+	proj := plan.Projects[0]
+	require.Equal(t, newer, proj.Dir, "falls back to the most recently used directory that still exists")
+	require.Equal(t, 3, proj.Total)
+	want := []FoldedDirectory{
+		{Dir: older, Sessions: 1, Exists: true},
+		{Dir: gone, Sessions: 1, Exists: false},
+	}
+	sort.Slice(want, func(i, j int) bool { return want[i].Dir < want[j].Dir })
+	require.Equal(t, want, proj.Folded)
+}
+
+func TestNewPlanProjectWithNoSurvivingDirectory(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, v2Schema)
+	base := t.TempDir()
+	goneA := filepath.Join(base, "a")
+	goneB := filepath.Join(base, "b")
+	f.project("prj_lost", filepath.Join(base, "worktree"))
+	f.sessionV2("ses_a", "prj_lost", "", goneA, "A", 0, 1_000, 1_000)
+	f.sessionV2("ses_a_child", "prj_lost", "ses_a", goneA, "A child", 0, 1_500, 1_500)
+	f.sessionV2("ses_b", "prj_lost", "", goneB, "B", 0, 1_000, 1_000)
+	f.sessionV2("ses_nodir", "prj_lost", "", "", "No dir", 0, 1_000, 1_000)
+	f.exec(`UPDATE project SET worktree = '' WHERE id = 'prj_lost'`)
+	src := f.open()
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{})
+	require.NoError(t, err)
+	require.Empty(t, plan.Projects)
+	require.Equal(t, []SkippedGroup{
+		{Dir: "(none)", Sessions: 1, Reason: "no project directory recorded"},
+		{Dir: goneA, Sessions: 2, Reason: "directory does not exist"},
+		{Dir: goneB, Sessions: 1, Reason: "directory does not exist"},
+	}, plan.Skipped)
+}
+
+func TestNewPlanFiltersMatchFoldedDirectories(t *testing.T) {
+	t.Parallel()
+	f, worktree, other, gone, _, _ := sharedProjectFixture(t)
+	src := f.open()
+
+	// Selecting a secondary checkout pulls in the whole project, filed
+	// under its worktree.
+	for _, filter := range []string{other, gone} {
+		plan, err := NewPlan(t.Context(), src, PlanOptions{Projects: []string{filter}})
+		require.NoError(t, err)
+		require.Len(t, plan.Projects, 1, filter)
+		require.Equal(t, worktree, plan.Projects[0].Dir)
+		require.Equal(t, 4, plan.Projects[0].Total)
+		require.Empty(t, plan.Skipped)
+	}
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{Projects: []string{t.TempDir()}})
+	require.NoError(t, err)
+	require.Empty(t, plan.Projects)
+	require.Empty(t, plan.Skipped)
+
+	// Directory grouping keeps the filter literal.
+	plan, err = NewPlan(t.Context(), src, PlanOptions{GroupBy: GroupByDirectory, Projects: []string{other}})
+	require.NoError(t, err)
+	require.Len(t, plan.Projects, 1)
+	require.Equal(t, other, plan.Projects[0].Dir)
+	require.Equal(t, 2, plan.Projects[0].Total)
+}
+
+func TestParseGrouping(t *testing.T) {
+	t.Parallel()
+	for input, want := range map[string]Grouping{
+		"":          GroupByProject,
+		"project":   GroupByProject,
+		"directory": GroupByDirectory,
+	} {
+		got, err := ParseGrouping(input)
+		require.NoError(t, err, input)
+		require.Equal(t, want, got, input)
+	}
+	_, err := ParseGrouping("bogus")
+	require.EqualError(t, err, `unknown grouping "bogus" (want "project" or "directory")`)
 }
 
 func TestNewPlanFiltersAndOverrides(t *testing.T) {

@@ -315,6 +315,9 @@ func shouldSkipDir(name string) bool {
 }
 
 // gatherStatsFromProjects gathers stats from all known projects in projects.json.
+// Projects that share a data directory (for example when data_directory
+// points every checkout at one central database) are read once so their
+// usage is not counted several times over.
 func gatherStatsFromProjects(ctx context.Context) ([]ProjectStats, error) {
 	projectList, err := projects.Load()
 	if err != nil {
@@ -325,10 +328,18 @@ func gatherStatsFromProjects(ctx context.Context) ([]ProjectStats, error) {
 		dbPath     string
 		projectDir string
 	}
+	seen := map[string]bool{}
 
 	for _, p := range projectList.Projects {
 		dbPath := filepath.Join(p.DataDir, "crush.db")
+		if abs, err := filepath.Abs(dbPath); err == nil {
+			dbPath = abs
+		}
+		if seen[dbPath] {
+			continue
+		}
 		if _, err := os.Stat(dbPath); err == nil {
+			seen[dbPath] = true
 			dbPaths = append(dbPaths, struct {
 				dbPath     string
 				projectDir string

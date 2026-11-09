@@ -42,7 +42,10 @@ Per-call usage is carried over as well, so spend reports stay exact for
 the imported history. Pass --no-usage to leave the ledger untouched.
 
 Sessions that already exist in Crush are left alone, so the command is
-safe to run again. The OpenCode database is only ever read.`,
+safe to run again. Pass --replace to rewrite them from the OpenCode
+database instead, picking up history recorded since the previous import;
+anything Crush added to those sessions in the meantime is discarded. The
+OpenCode database is only ever read.`,
 	Example: `
 # Preview what would be imported from the default OpenCode database
 crush import opencode --dry-run
@@ -58,6 +61,9 @@ crush import opencode --group-by directory
 
 # Import one project from a copied database
 crush import opencode --source ~/backup/opencode.db --project ~/src/app
+
+# Refresh sessions imported earlier with what OpenCode recorded since
+crush import opencode --current --replace
   `,
 	RunE: runImportOpenCode,
 }
@@ -70,6 +76,7 @@ func init() {
 	importOpenCodeCmd.Flags().Bool("dry-run", false, "Show what would be imported without writing anything")
 	importOpenCodeCmd.Flags().Bool("json", false, "Output as JSON")
 	importOpenCodeCmd.Flags().Bool("no-usage", false, "Do not record per-call usage for imported sessions")
+	importOpenCodeCmd.Flags().Bool("replace", false, "Rewrite sessions that already exist in Crush from the OpenCode database")
 }
 
 // importOpenCodeOutput is the machine-readable report of one run.
@@ -78,6 +85,7 @@ type importOpenCodeOutput struct {
 	Generation string                    `json:"generation"`
 	GroupBy    string                    `json:"group_by"`
 	DryRun     bool                      `json:"dry_run"`
+	Replace    bool                      `json:"replace"`
 	Projects   []opencode.ProjectResult  `json:"projects"`
 	Skipped    []opencode.SkippedGroup   `json:"skipped,omitempty"`
 	Warnings   []string                  `json:"warnings,omitempty"`
@@ -90,6 +98,7 @@ type importOpenCodeTotals struct {
 	Sessions       int `json:"sessions"`
 	Folded         int `json:"folded"`
 	Imported       int `json:"imported"`
+	Replaced       int `json:"replaced"`
 	AlreadyPresent int `json:"already_present"`
 	Failed         int `json:"failed"`
 	Skipped        int `json:"skipped"`
@@ -112,6 +121,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
 	noUsage, _ := cmd.Flags().GetBool("no-usage")
+	replace, _ := cmd.Flags().GetBool("replace")
 	groupByFlag, _ := cmd.Flags().GetString("group-by")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 
@@ -154,6 +164,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 		Generation: plan.Generation.String(),
 		GroupBy:    string(plan.GroupBy),
 		DryRun:     dryRun,
+		Replace:    replace,
 		Skipped:    plan.Skipped,
 		Warnings:   plan.Warnings,
 	}
@@ -161,7 +172,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 		out.Total.Skipped += s.Sessions
 	}
 
-	importer := opencode.NewImporter(src, opencode.ImportOptions{Usage: !noUsage, DryRun: dryRun})
+	importer := opencode.NewImporter(src, opencode.ImportOptions{Usage: !noUsage, DryRun: dryRun, Replace: replace})
 	for _, proj := range plan.Projects {
 		res, err := importOpenCodeProject(ctx, importer, proj, dryRun, dataDir == "")
 		if err != nil {
@@ -173,6 +184,7 @@ func runImportOpenCode(cmd *cobra.Command, _ []string) error {
 		out.Total.Sessions += res.Sessions
 		out.Total.Folded += foldedSessions(*res)
 		out.Total.Imported += res.Imported
+		out.Total.Replaced += res.Replaced
 		out.Total.AlreadyPresent += res.AlreadyPresent
 		out.Total.Failed += res.Failed
 		out.Total.Messages += res.Messages
@@ -310,7 +322,7 @@ func importOpenCodeProject(ctx context.Context, importer *opencode.Importer, pro
 	if releaseErr != nil {
 		return nil, fmt.Errorf("close Crush database: %w", releaseErr)
 	}
-	if register && res.Imported > 0 {
+	if register && res.Imported+res.Replaced > 0 {
 		if err := projects.Register(proj.Dir, proj.DataDir); err != nil {
 			res.Warnings = append(res.Warnings, "could not register project with Crush: "+err.Error())
 		}
@@ -324,6 +336,7 @@ func importRow(label string, p opencode.ProjectResult) []string {
 		fmt.Sprintf("%d", p.Sessions),
 		fmt.Sprintf("%d", foldedSessions(p)),
 		fmt.Sprintf("%d", p.Imported),
+		fmt.Sprintf("%d", p.Replaced),
 		fmt.Sprintf("%d", p.AlreadyPresent),
 		fmt.Sprintf("%d", p.Failed),
 		fmt.Sprintf("%d", p.Messages),
@@ -337,6 +350,7 @@ func importTotalsRow(t importOpenCodeTotals) []string {
 		fmt.Sprintf("%d", t.Sessions),
 		fmt.Sprintf("%d", t.Folded),
 		fmt.Sprintf("%d", t.Imported),
+		fmt.Sprintf("%d", t.Replaced),
 		fmt.Sprintf("%d", t.AlreadyPresent),
 		fmt.Sprintf("%d", t.Failed),
 		fmt.Sprintf("%d", t.Messages),
@@ -354,7 +368,7 @@ func foldedSessions(p opencode.ProjectResult) int {
 	return n
 }
 
-var importHeaders = []string{"Project", "Sessions", "Folded", "Imported", "Present", "Failed", "Messages", "Usage"}
+var importHeaders = []string{"Project", "Sessions", "Folded", "Imported", "Replaced", "Present", "Failed", "Messages", "Usage"}
 
 func renderImportTable(w io.Writer, out importOpenCodeOutput) {
 	home, _ := os.UserHomeDir()
@@ -413,6 +427,9 @@ func importSummaryLine(out importOpenCodeOutput) string {
 	var parts []string
 	if out.DryRun {
 		parts = append(parts, "Dry run: nothing was written.")
+	}
+	if out.Total.Replaced > 0 {
+		parts = append(parts, fmt.Sprintf("%d session(s) already in Crush were rewritten from OpenCode.", out.Total.Replaced))
 	}
 	if out.Total.Folded > 0 {
 		parts = append(parts, fmt.Sprintf("%d session(s) recorded in other worktrees of the same project were filed under its main directory.", out.Total.Folded))

@@ -576,6 +576,88 @@ func TestImportProjectPreservesExistingSessions(t *testing.T) {
 	require.Equal(t, root, child.ParentSessionID)
 }
 
+func TestImportProjectReplaceRewritesExistingSessions(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, v2Schema)
+	dir := t.TempDir()
+	root := seedV2Conversation(f, dir)
+	src := f.open()
+
+	plan, err := NewPlan(t.Context(), src, PlanOptions{})
+	require.NoError(t, err)
+	proj := plan.Projects[0]
+	conn := openCrushDB(t, proj.DataDir)
+
+	first, err := NewImporter(src, ImportOptions{Usage: true}).ImportProject(t.Context(), proj, conn)
+	require.NoError(t, err)
+	require.Equal(t, 2, first.Imported)
+	require.Zero(t, first.Replaced)
+
+	// Crush then diverges: the session is renamed, a message is appended
+	// and a usage event is recorded against it.
+	ctx := t.Context()
+	_, err = conn.ExecContext(ctx, `UPDATE sessions SET title = 'Renamed locally', cost = 99 WHERE id = ?`, root)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `INSERT INTO messages (id, session_id, role, parts, created_at, updated_at)
+		VALUES ('local_msg', ?, 'user', '[]', 1, 1)`, root)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `INSERT INTO usage_events (session_id, cost, created_at) VALUES (?, 42, 1)`, root)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `INSERT INTO files (id, session_id, path, content, version, created_at, updated_at)
+		VALUES ('local_file', ?, 'a.txt', '', 1, 1, 1)`, root)
+	require.NoError(t, err)
+
+	// A dry run reports what replace would do without touching anything.
+	dry, err := NewImporter(src, ImportOptions{Usage: true, DryRun: true, Replace: true}).ImportProject(t.Context(), proj, conn)
+	require.NoError(t, err)
+	require.Equal(t, 2, dry.Replaced)
+	require.Zero(t, dry.Imported)
+	require.Zero(t, dry.AlreadyPresent)
+	var title string
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT title FROM sessions WHERE id = ?`, root).Scan(&title))
+	require.Equal(t, "Renamed locally", title)
+
+	res, err := NewImporter(src, ImportOptions{Usage: true, Replace: true}).ImportProject(t.Context(), proj, conn)
+	require.NoError(t, err)
+	require.Equal(t, 2, res.Replaced)
+	require.Zero(t, res.Imported)
+	require.Zero(t, res.AlreadyPresent)
+	require.Zero(t, res.Failed)
+	require.Empty(t, res.Warnings)
+	require.Equal(t, first.Messages, res.Messages)
+	require.Equal(t, first.Events, res.Events)
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	got, err := sessions.Get(ctx, root)
+	require.NoError(t, err)
+	require.Equal(t, "Fix the flaky test", got.Title)
+	require.Equal(t, int64(7), got.MessageCount)
+	require.InDelta(t, 1.75, got.Cost, 1e-9)
+	require.Equal(t, int64(1_700_000_000), got.CreatedAt)
+	require.Equal(t, int64(1_700_000_900), got.UpdatedAt)
+
+	msgs, err := q.ListMessagesBySession(ctx, root)
+	require.NoError(t, err)
+	require.Len(t, msgs, 7)
+	for _, m := range msgs {
+		require.NotEqual(t, "local_msg", m.ID)
+	}
+
+	var count int
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events WHERE session_id = ?`, root).Scan(&count))
+	require.Equal(t, 2, count, "the local usage event is gone and the source's are back")
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE session_id = ?`, root).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&count))
+	require.Equal(t, 2, count, "no duplicate rows")
+
+	child, err := sessions.Get(ctx, "msg_3$$call_task")
+	require.NoError(t, err)
+	require.Equal(t, root, child.ParentSessionID)
+	require.Equal(t, int64(2), child.MessageCount)
+}
+
 func TestImportProjectDataDirIsCreatedByCaller(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, v2Schema)

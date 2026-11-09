@@ -68,6 +68,17 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 	return err
 }
 
+const deleteSessionUsageEvents = `-- name: DeleteSessionUsageEvents :exec
+DELETE FROM usage_events
+WHERE session_id = ?
+`
+
+// Used by history importers replacing a session they wrote earlier.
+func (q *Queries) DeleteSessionUsageEvents(ctx context.Context, sessionID string) error {
+	_, err := q.exec(ctx, q.deleteSessionUsageEventsStmt, deleteSessionUsageEvents, sessionID)
+	return err
+}
+
 const listRootSessionCosts = `-- name: ListRootSessionCosts :many
 SELECT
     id,

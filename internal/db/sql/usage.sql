@@ -64,3 +64,8 @@ SELECT
 FROM sessions s
 WHERE s.parent_session_id IS NULL
   AND s.created_at >= ?;
+
+-- name: DeleteSessionUsageEvents :exec
+-- Used by history importers replacing a session they wrote earlier.
+DELETE FROM usage_events
+WHERE session_id = ?;

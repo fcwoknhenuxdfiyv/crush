@@ -16,6 +16,10 @@ type ImportOptions struct {
 	Usage bool
 	// DryRun maps every session but writes nothing.
 	DryRun bool
+	// Replace rewrites sessions that already exist in Crush instead of
+	// leaving them alone, so a re-run picks up history recorded since the
+	// previous import.
+	Replace bool
 }
 
 // ProjectResult reports what happened to one project's sessions.
@@ -25,6 +29,7 @@ type ProjectResult struct {
 	Folded         []FoldedDirectory `json:"folded,omitempty"`
 	Sessions       int               `json:"sessions"`
 	Imported       int               `json:"imported"`
+	Replaced       int               `json:"replaced"`
 	AlreadyPresent int               `json:"already_present"`
 	Failed         int               `json:"failed"`
 	Messages       int               `json:"messages"`
@@ -162,7 +167,7 @@ func (im *Importer) importTree(ctx context.Context, q *db.Queries, writer *sql.C
 		childCost += im.importTree(ctx, q, writer, proj, child, childID, crushID, res)
 	}
 
-	if found {
+	if found && !im.opts.Replace {
 		res.AlreadyPresent++
 		return existing.Cost
 	}
@@ -172,18 +177,26 @@ func (im *Importer) importTree(ctx context.Context, q *db.Queries, writer *sql.C
 		res.Dropped[k] += v
 	}
 	if im.opts.DryRun {
-		res.Imported++
+		if found {
+			res.Replaced++
+		} else {
+			res.Imported++
+		}
 		res.Messages += len(mapped.Messages)
 		res.Events += len(mapped.Events)
 		return mapped.Session.Cost
 	}
 
-	if err := writeSession(ctx, writer, mapped); err != nil {
+	if err := writeSession(ctx, writer, mapped, found); err != nil {
 		res.Failed++
 		res.Warnings = append(res.Warnings, fmt.Sprintf("session %s: %v", sess.ID, err))
 		return 0
 	}
-	res.Imported++
+	if found {
+		res.Replaced++
+	} else {
+		res.Imported++
+	}
 	res.Messages += len(mapped.Messages)
 	res.Events += len(mapped.Events)
 	return mapped.Session.Cost
@@ -214,13 +227,22 @@ func (im *Importer) skipChildren(proj *ProjectPlan, id string, res *ProjectResul
 	}
 }
 
-// writeSession stores one mapped session atomically.
-func writeSession(ctx context.Context, writer *sql.Conn, mapped *Mapped) error {
+// writeSession stores one mapped session atomically. When replace is set
+// the session's previous row, messages, files and usage events are removed
+// first so the import reflects the source exactly; child sessions are left
+// in place because the caller rewrites them in turn.
+func writeSession(ctx context.Context, writer *sql.Conn, mapped *Mapped, replace bool) error {
 	tx, err := writer.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	q := db.New(tx)
+	if replace {
+		if err := clearSession(ctx, q, mapped.Session.ID); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
 	for _, msg := range mapped.Messages {
 		if err := q.ImportMessage(ctx, msg); err != nil {
 			tx.Rollback()
@@ -239,6 +261,25 @@ func writeSession(ctx context.Context, writer *sql.Conn, mapped *Mapped) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// clearSession removes everything a previous import wrote for id. Foreign
+// keys are off while importing, so the dependent rows are deleted
+// explicitly rather than relying on cascades.
+func clearSession(ctx context.Context, q *db.Queries, id string) error {
+	if err := q.DeleteSessionMessages(ctx, id); err != nil {
+		return fmt.Errorf("clear messages: %w", err)
+	}
+	if err := q.DeleteSessionFiles(ctx, id); err != nil {
+		return fmt.Errorf("clear files: %w", err)
+	}
+	if err := q.DeleteSessionUsageEvents(ctx, id); err != nil {
+		return fmt.Errorf("clear usage events: %w", err)
+	}
+	if err := q.DeleteSession(ctx, id); err != nil {
+		return fmt.Errorf("clear session: %w", err)
 	}
 	return nil
 }

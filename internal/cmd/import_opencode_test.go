@@ -232,6 +232,40 @@ func TestImportOpenCodeImportsAndIsIdempotent(t *testing.T) {
 	require.Equal(t, 1, again.Total.AlreadyPresent)
 }
 
+func TestImportOpenCodeReplaceRewritesExistingSessions(t *testing.T) {
+	projectDir, source := setupImportOpenCodeEnv(t)
+	dataDir := filepath.Join(projectDir, ".crush")
+
+	runImportOpenCodeCmd(t, map[string]string{"source": source})
+
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(t.Context(), `UPDATE sessions SET title = 'Renamed locally' WHERE id = 'ses_keep'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Release(dataDir))
+
+	report, _ := runImportOpenCodeCmd(t, map[string]string{"source": source, "replace": "true"})
+	require.True(t, report.Replace)
+	require.Len(t, report.Projects, 1)
+	require.Equal(t, 0, report.Projects[0].Imported)
+	require.Equal(t, 1, report.Projects[0].Replaced)
+	require.Equal(t, 0, report.Projects[0].AlreadyPresent)
+	require.Equal(t, 1, report.Total.Replaced)
+	require.Empty(t, report.Errors)
+
+	conn, err = db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	q := db.New(conn)
+	sess, err := q.GetSessionByID(t.Context(), "ses_keep")
+	require.NoError(t, err)
+	require.Equal(t, "Fix the build", sess.Title)
+	require.Equal(t, int64(2), sess.MessageCount)
+	msgs, err := q.ListMessagesBySession(t.Context(), "ses_keep")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	require.NoError(t, db.Release(dataDir))
+}
+
 func TestImportOpenCodeCurrentFilter(t *testing.T) {
 	projectDir, source := setupImportOpenCodeEnv(t)
 

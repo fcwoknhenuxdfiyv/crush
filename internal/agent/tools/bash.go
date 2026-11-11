@@ -79,7 +79,6 @@ var bannedCommands = []string{
 	"aria2c",
 	"axel",
 	"chrome",
-	"curl",
 	"curlie",
 	"firefox",
 	"http-prompt",
@@ -89,10 +88,8 @@ var bannedCommands = []string{
 	"nc",
 	"safari",
 	"scp",
-	"ssh",
 	"telnet",
 	"w3m",
-	"wget",
 	"xh",
 
 	// System administration
